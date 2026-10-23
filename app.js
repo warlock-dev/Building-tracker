@@ -7,6 +7,11 @@ const LS_KEY = 'siteLedger.v1';
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const STEEL_SIZES = ['8mm','10mm','12mm','16mm'];
 const PAY_MODES = ['Cash','UPI','Bank transfer','Cheque'];
+/* Cloud sync is ON when config.js contains a Firebase apiKey; otherwise the app runs locally in this browser. */
+const CFG = window.SITE_CONFIG || {};
+const FB = CFG.firebase || {};
+const CLOUD_ON = !!(FB.apiKey && String(FB.apiKey).trim());
+const cloud = { user: null, role: null, status: 'idle', team: [], unsubs: [], ready: false };
 
 /* ---------------- helpers ---------------- */
 const $ = (s, el = document) => el.querySelector(s);
@@ -189,7 +194,7 @@ function normalize(o) {
   });
   return d;
 }
-function save() { try { localStorage.setItem(LS_KEY, JSON.stringify(db)); } catch (e) { toast('Could not save in this browser (private mode?). Download a backup.', 'err'); } }
+function save() { if (CLOUD_ON) return; try { localStorage.setItem(LS_KEY, JSON.stringify(db)); } catch (e) { toast('Could not save in this browser (private mode?). Download a backup.', 'err'); } }
 function R(key) {
   const T = TB[key];
   if (T.source) return T.source();
@@ -391,9 +396,10 @@ function saveForm(form) {
   if (err) { toast(err, 'err'); return; }
   if (v.date) lastDate = v.date;
   const arr = db.data[T.key], eid = form.dataset.editing;
-  if (eid) { const i = arr.findIndex(r => r.id === eid); if (i >= 0) arr[i] = { ...arr[i], ...v }; toast('Entry updated ✓'); }
-  else { arr.push({ id: uid(), _t: Date.now(), ...v }); toast('Entry added ✓'); }
-  save(); resetForm(form, T); afterChange();
+  let saved;
+  if (eid) { const i = arr.findIndex(r => r.id === eid); if (i >= 0) { arr[i] = { ...arr[i], ...v }; saved = arr[i]; } toast('Entry updated ✓'); }
+  else { saved = { id: uid(), _t: Date.now(), ...v }; arr.push(saved); toast('Entry added ✓'); }
+  save(); if (saved) syncPut(T.key, saved); resetForm(form, T); afterChange();
 }
 function startEdit(tKey, id, scope) {
   const T = TB[tKey], row = db.data[tKey].find(r => r.id === id);
@@ -517,23 +523,38 @@ function renderUpdate(sub) {
 
 function renderSettings() {
   const m = db.meta, f = (k, l, t = 'text', hint = '') => `<label class="fld"><span>${l}</span><input name="${k}" type="${t}" ${t === 'number' ? 'min="0" step="any"' : ''} value="${esc(m[k])}">${hint ? `<small>${hint}</small>` : ''}</label>`;
-  view.innerHTML = `<div class="page settings"><div class="card"><h3>Project details</h3>
+  const details = `<div class="card"><h3>Project details</h3>
     <form id="metaForm"><div class="form-grid">
       ${f('project', 'Project name')}${f('site', 'Site / location')}${f('contractor', 'Contractor name')}${f('contractValue', 'Contract value (₹)', 'number', 'Optional — shows balance on dashboard')}
       ${f('munshi', 'Munshi name')}${f('labourHead', 'Labour head name')}${f('creditor', 'Creditor / financier')}${f('shop', 'Credit shop name')}
-    </div><div class="form-actions"><button class="btn primary" type="submit">Save details</button></div></form></div>
-    <div class="card" style="margin-top:16px"><h3>Data &amp; backup</h3>
-      <p class="note" style="margin-top:0">Your entries are stored in <b>this browser</b>. Download a backup regularly. To share the same data with others, publish <b>data.json</b> to your GitHub repo (see README).</p>
+    </div><div class="form-actions"><button class="btn primary" type="submit">Save details</button></div></form></div>`;
+  const team = CLOUD_ON ? `<div class="card" style="margin-top:16px"><h3>Team access</h3>
+    <p class="note" style="margin-top:0">People who can open this ledger by signing in with their Google account. <b>Editor</b> can add and change entries. <b>Viewer</b> can only look and download PDFs. You (${esc(CFG.ownerEmail || '')}) always have full access.</p>
+    <div id="teamList" class="list"></div>
+    <form id="teamForm" class="form-grid" style="margin-top:12px;align-items:end">
+      <label class="fld"><span>Google email</span><input name="email" type="email" placeholder="name@gmail.com" required></label>
+      <label class="fld"><span>Role</span><select name="role"><option value="editor">Editor</option><option value="viewer">Viewer</option></select></label>
+      <div><button class="btn primary" type="submit">Add person</button></div>
+    </form></div>` : '';
+  const store = CLOUD_ON
+    ? `<p class="note" style="margin-top:0">☁️ Your data is saved in your Google-secured cloud database and syncs live to every phone and computer you sign in on. It also works offline and syncs when the network returns. Still, download a backup now and then.</p>`
+    : `<p class="note" style="margin-top:0">⚠️ Cloud sync is <b>off</b>: entries are stored in <b>this browser only</b>. Follow <b>SETUP-GOOGLE.md</b> to turn on Google sign-in and sync across devices. Until then, download a backup regularly.</p>`;
+  const xlCard = `<div class="card" style="margin-top:16px"><h3>📊 Excel import / export</h3>
+    <p class="note" style="margin-top:0">Already keeping records in Excel? Upload the file and we'll move the entries into the website — sheets and columns are matched automatically and you can review everything before it is saved.</p>
+    <div class="tools"><button class="btn primary" data-act="xlImport">⬆ Import from Excel</button><button class="btn" data-act="xlTemplate">⬇ Blank Excel template</button><button class="btn" data-act="xlExport">⬇ Export all data to Excel</button>
+    <input type="file" id="xlFile" accept=".xlsx,.xls,.xlsm,.csv" hidden></div></div>`;
+  view.innerHTML = `<div class="page settings">${details}${team}${xlCard}
+    <div class="card" style="margin-top:16px"><h3>Data &amp; backup</h3>${store}
       <div class="tools">
         <button class="btn primary" data-act="backup">⬇ Download backup</button>
-        <button class="btn" data-act="publish">⬇ Download data.json (to publish)</button>
         <button class="btn" data-act="restore">⬆ Restore from file</button>
-        <button class="btn" data-act="loadPublished">⟳ Reload published data.json</button>
+        ${CLOUD_ON ? '' : '<button class="btn" data-act="publish">⬇ Download data.json (to publish)</button><button class="btn" data-act="loadPublished">⟳ Reload published data.json</button>'}
         <input type="file" id="restoreFile" accept=".json,application/json" hidden>
       </div>
       <div class="tools" style="margin-top:14px"><button class="btn" data-act="demo">Load demo data</button><button class="btn danger" data-act="reset">Erase everything</button></div>
-      <p class="note">Restore / reload / demo replace the data currently in this browser.</p>
+      <p class="note">Restore / demo / erase replace <b>all</b> data${CLOUD_ON ? ' for everyone who uses this ledger' : ' in this browser'}.</p>
     </div></div>`;
+  renderTeam();
 }
 
 /* ---------------- modal / toast ---------------- */
@@ -699,7 +720,7 @@ function demoData() {
   d.data.cement = mk([{ date: D(7, 6), received: 100, note: 'Bill #221' }, { date: D(7, 12), used: 35, work: 'Footing PCC' }, { date: D(8, 4), received: 150 }, { date: D(8, 20), used: 60, work: 'Brickwork' }, { date: D(9, 10), used: 40, work: 'Slab' }]);
   return d;
 }
-function setDB(next, msg) { db = normalize(next); save(); applyMeta(); route(); toast(msg); }
+function setDB(next, msg) { const old = db; db = normalize(next); save(); syncReplaceAll(old, db); applyMeta(); route(); toast(msg); }
 async function loadPublished(silent) {
   try {
     const res = await fetch('data.json', { cache: 'no-store' });
@@ -722,11 +743,17 @@ document.addEventListener('submit', e => {
     const amt = num(f.elements.amt.value); if (amt <= 0) return toast('Enter an amount.', 'err');
     const row = db.data[f.dataset.t].find(r => r.id === f.dataset.id); if (!row) return;
     row.paid = r2(num(row.paid) + amt); (row.log = row.log || []).push({ date: f.elements.date.value || lastDate, amt });
-    lastDate = f.elements.date.value || lastDate; save(); closeModal(); afterChange(); toast('Payment recorded ✓');
+    lastDate = f.elements.date.value || lastDate; save(); syncPut(f.dataset.t, row); closeModal(); afterChange(); toast('Payment recorded ✓');
+  } else if (f.id === 'teamForm') {
+    e.preventDefault();
+    const em = f.elements.email.value.trim().toLowerCase();
+    if (!/^\S+@\S+\.\S+$/.test(em)) return toast('Enter a valid email.', 'err');
+    fsys().collection('access').doc(em).set({ role: f.elements.role.value, addedBy: cloud.user.email, at: Date.now() }).then(() => toast('Access granted to ' + em + ' ✓')).catch(syncErr);
+    f.reset();
   } else if (f.id === 'metaForm') {
     e.preventDefault(); const fd = new FormData(f);
     Object.keys(DEFAULT_META).forEach(k => { db.meta[k] = k === 'contractValue' ? num(fd.get(k)) : String(fd.get(k) ?? '').trim() || DEFAULT_META[k]; });
-    save(); applyMeta(); toast('Details saved ✓');
+    save(); syncMeta(); applyMeta(); toast('Details saved ✓');
   }
 });
 document.addEventListener('input', e => {
@@ -740,7 +767,7 @@ document.addEventListener('click', e => {
   const b = e.target.closest('[data-act]'); if (!b) return;
   const act = b.dataset.act, scope = b.closest('.modal') || view;
   if (act === 'edit') startEdit(b.dataset.t, b.dataset.id, scope);
-  else if (act === 'del') { if (confirm('Delete this entry? This cannot be undone.')) { db.data[b.dataset.t] = db.data[b.dataset.t].filter(r => r.id !== b.dataset.id); save(); afterChange(); toast('Entry deleted'); } }
+  else if (act === 'del') { if (confirm('Delete this entry? This cannot be undone.')) { db.data[b.dataset.t] = db.data[b.dataset.t].filter(r => r.id !== b.dataset.id); save(); syncDel(b.dataset.id); afterChange(); toast('Entry deleted'); } }
   else if (act === 'pay') payModal(b.dataset.t, b.dataset.id);
   else if (act === 'cancel') { const f = b.closest('form'); resetForm(f, TB[f.dataset.table]); }
   else if (act === 'steel') steelModal(b.dataset.size);
@@ -748,6 +775,9 @@ document.addEventListener('click', e => {
   else if (act === 'pdf') pdfSections([b.dataset.sec]);
   else if (act === 'pdfAll') pdfSections(SECTIONS.map(s => s.id));
   else if (act === 'pdfSteel') pdfSteel(b.dataset.size);
+  else if (act === 'signin') signIn();
+  else if (act === 'signout') { if (confirm('Sign out of ' + (cloud.user ? cloud.user.email : 'this account') + '?')) firebase.auth().signOut(); }
+  else if (act === 'rmTeam') { if (confirm('Remove access for ' + b.dataset.email + '?')) fsys().collection('access').doc(b.dataset.email).delete().catch(syncErr); }
   else if (act === 'backup') download(`${slug(db.meta.project)}-backup-${todayStr()}.json`, JSON.stringify(db, null, 2));
   else if (act === 'publish') download('data.json', JSON.stringify(db, null, 2));
   else if (act === 'restore') $('#restoreFile').click();
@@ -764,10 +794,388 @@ document.addEventListener('change', e => {
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && modalFn) closeModal(); });
 document.addEventListener('mousedown', e => { if (e.target.classList && e.target.classList.contains('m-back')) closeModal(); });
 
+/* ---------------- Excel import / export ---------------- */
+const SHEET_NAME = { bricks: 'Bricks', sand: 'Sand', aggregate: 'Aggregate', steelBuy: 'Steel Purchases', steelUse: 'Steel Usage', soil: 'Soil Filling', contractorPay: 'Contractor Payments', salary: 'Salary', shopBuy: 'Shop Credit Items', shopPay: 'Shop Payments', cashGiven: 'Munshi Cash Given', cashSpent: 'Munshi Expenses', creditIn: 'Creditor Contributions', creditOut: 'Creditor Repayments', misc: 'Local Labour Misc', lhead: 'Labour Head', cement: 'Cement' };
+const IMPORTABLE = Object.keys(SHEET_NAME);
+const norm = s => String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+const SYN = {
+  date: ['date', 'dt', 'tarikh', 'day', 'paidon', 'dateofpayment'],
+  party: ['supplier', 'party', 'vendor', 'driver', 'seller', 'dealer', 'name', 'suppliername'],
+  material: ['material', 'item', 'type'], unit: ['unit', 'uom'], size: ['size', 'dia', 'diameter', 'steelsize'],
+  qty: ['qty', 'quantity', 'trips', 'trip', 'bundles', 'bundle', 'nos', 'no', 'bricks', 'pieces', 'pcs', 'count', 'tractors', 'tractortrips'],
+  rate: ['rate', 'price', 'perunit', 'pertrip', 'rateper'],
+  total: ['total', 'totalamount', 'billamount', 'bill', 'amount', 'value', 'cost', 'billvalue'],
+  paid: ['paid', 'paidamount', 'payment', 'advance', 'adv', 'amountpaid', 'advancepaid'],
+  note: ['remarks', 'remark', 'note', 'notes', 'details', 'narration', 'comment', 'comments', 'description'],
+  work: ['work', 'worktype', 'usedon', 'use', 'purpose', 'place', 'location', 'usedfor', 'workdone'],
+  area: ['area', 'place', 'location', 'site'], days: ['days', 'daysattended', 'attended', 'presentdays', 'workingdays', 'noofdays'],
+  from: ['from', 'workfrom', 'start', 'startdate', 'fromdate'], to: ['to', 'workto', 'end', 'enddate', 'todate'],
+  name: ['name', 'labour', 'mistri', 'worker', 'person', 'munshi', 'labourmistri', 'employee'],
+  amount: ['amount', 'paid', 'payment', 'amountpaid', 'cash', 'given', 'spent', 'expense', 'received', 'total', 'rs', 'value'],
+  item: ['item', 'items', 'particular', 'particulars', 'description', 'material', 'article'],
+  particular: ['particular', 'particulars', 'item', 'spenton', 'detail', 'details', 'description', 'expense', 'head'],
+  mode: ['mode', 'paymentmode', 'by'], received: ['received', 'receiving', 'receive', 'in', 'incoming', 'inward', 'stockin', 'receipt'],
+  used: ['used', 'usage', 'issue', 'issued', 'consumed', 'out', 'outward'], labour: ['labour', 'labourers', 'labor', 'laborers', 'helper', 'helpers'], mistri: ['mistri', 'mason', 'masons', 'mistris']
+};
+function guessTable(name) {
+  const n = norm(name); if (!n) return '';
+  for (const k of IMPORTABLE) if (norm(SHEET_NAME[k]) === n) return k;
+  const has = (...w) => w.some(x => n.includes(x));
+  if (has('readme', 'instruction', 'summary', 'dashboard')) return '';
+  if (has('cement')) return 'cement';
+  if (has('brick')) return 'bricks';
+  if (has('sand')) return 'sand';
+  if (has('aggreg', 'gitti', 'dust', '20mm')) return 'aggregate';
+  if (has('steel', 'saria', 'rebar', 'tmt')) return has('use', 'used', 'usage', 'consum') ? 'steelUse' : 'steelBuy';
+  if (has('soil', 'filling', 'mitti')) return 'soil';
+  if (has('contractor', 'thekedar')) return 'contractorPay';
+  if (has('salary', 'wages', 'payroll')) return 'salary';
+  if (has('scientific', 'shop')) return has('pay', 'paid') ? 'shopPay' : 'shopBuy';
+  if (has('rocky', 'singhania', 'creditor', 'finance', 'contribution', 'loan')) return has('repay', 'return') ? 'creditOut' : 'creditIn';
+  if (has('labourhead', 'headlabour', 'lhead', 'labourcontractor')) return 'lhead';
+  if (has('munshi', 'expense', 'cash', 'petty')) return has('given', 'receiv', 'credit', 'advance') && !has('expense', 'spent') ? 'cashGiven' : 'cashSpent';
+  if (has('misc', 'local', 'labour', 'mistri')) return 'misc';
+  return '';
+}
+function detectHeaderRow(rows) {
+  let best = 0, bs = -1;
+  rows.slice(0, 15).forEach((r, i) => {
+    const txt = r.filter(c => typeof c === 'string' && c.trim() && isNaN(Number(c.replace(/[,₹\s]/g, '')))).length;
+    const sc = txt * 2 + r.filter(c => c !== '' && c != null).length;
+    if (txt >= 2 && sc > bs) { bs = sc; best = i; }
+  });
+  return best;
+}
+function autoMap(tKey, hdr) {
+  const T = TB[tKey], cand = [];
+  T.fields.forEach(f => {
+    const lab = norm(f.label), syn = SYN[f.k] || [];
+    hdr.forEach((h, c) => {
+      const n = norm(h); if (!n) return;
+      let s = 0;
+      if (n === lab || n === f.k) s = 100;
+      else { const si = syn.indexOf(n); if (si >= 0) s = 90 - si; else if (syn.some(x => x.length >= 3 && n.includes(x))) s = 45; else if (lab.length >= 4 && n.includes(lab)) s = 40; }
+      if (s) cand.push({ f: f.k, c, s });
+    });
+  });
+  cand.sort((a, b) => b.s - a.s);
+  const map = {}, used = new Set();
+  cand.forEach(x => { if (map[x.f] == null && !used.has(x.c)) { map[x.f] = x.c; used.add(x.c); } });
+  return map;
+}
+const isBlank = v => v === '' || v == null || (typeof v === 'string' && /^\s*(-|–|—|na|n\/a|nil)?\s*$/i.test(v));
+const ymd = d => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+const MON = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+function mkDate(y, m, d) { y = +y; m = +m; d = +d; if (y < 100) y += 2000; if (y < 2000 || y > 2100 || m < 1 || m > 12 || d < 1) return ''; const t = new Date(Date.UTC(y, m - 1, d)); return (t.getUTCMonth() === m - 1 && t.getUTCDate() === d) ? ymd(t) : ''; }
+function parseDate(v, year) {
+  if (isBlank(v)) return '';
+  if (v instanceof Date) return isNaN(v) ? '' : ymd(v);
+  if (typeof v === 'number') return (v > 20000 && v < 80000) ? ymd(new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 864e5)) : '';
+  const s = String(v).trim().replace(/(\d)(st|nd|rd|th)\b/i, '$1');
+  let m;
+  if ((m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/))) return mkDate(m[1], m[2], m[3]);
+  if ((m = s.match(/^(\d{1,2})[-\/.\s](\d{1,2})[-\/.\s](\d{2,4})$/))) return mkDate(m[3], m[2], m[1]);
+  if ((m = s.match(/^(\d{1,2})[\s\-\/.]*([A-Za-z]{3,9})[\s\-\/.,']*(\d{2,4})?$/))) { const mo = MON[m[2].slice(0, 3).toLowerCase()]; return mo ? mkDate(m[3] || year, mo, m[1]) : ''; }
+  if ((m = s.match(/^([A-Za-z]{3,9})[\s\-\/.]*(\d{1,2})[\s,\-\/.]*(\d{2,4})?$/))) { const mo = MON[m[1].slice(0, 3).toLowerCase()]; return mo ? mkDate(m[3] || year, mo, m[2]) : ''; }
+  return '';
+}
+function parseNum(v) {
+  if (isBlank(v)) return '';
+  if (typeof v === 'number') return Number.isFinite(v) ? v : NaN;
+  const s = String(v).replace(/₹|rs\.?|inr|\/-|,|\s/gi, '');
+  const m = s.match(/^\(?(-?\d+(\.\d+)?)\)?$/);
+  return m ? parseFloat(m[1]) * (/^\(/.test(s) ? -1 : 1) : NaN;
+}
+function matchOpt(f, v) {
+  const s = String(v ?? '').trim(); if (!s) return '';
+  const hit = f.opts.find(o => norm(o) === norm(s)); if (hit) return hit;
+  if (f.k === 'size') { const m = s.match(/(\d{1,2})/); if (m && f.opts.includes(m[1] + 'mm')) return m[1] + 'mm'; return null; }
+  if (f.k === 'material') return /20/.test(s) ? '20mm' : /dust/i.test(s) ? 'Dust' : 'Other';
+  if (f.k === 'mode') return /upi|gpay|phonepe|paytm|bhim/i.test(s) ? 'UPI' : /bank|neft|rtgs|imps|online|transfer/i.test(s) ? 'Bank transfer' : /chq|cheque|check/i.test(s) ? 'Cheque' : /cash/i.test(s) ? 'Cash' : null;
+  if (f.k === 'unit') return /ton|tonne/i.test(s) ? 'Ton' : /brass/i.test(s) ? 'Brass' : /cft|cubic/i.test(s) ? 'CFT' : /trip|tractor|trolley/i.test(s) ? 'Trip' : null;
+  return null;
+}
+const rowSig = (T, r) => T.fields.map(f => { const x = r[f.k]; return f.t === 'number' ? (x === '' || x == null ? '' : r2(x)) : String(x ?? '').trim().toLowerCase(); }).join('|');
+
+/* parse one block (sheet + section + column map) into importable rows */
+function xlParseBlock(b, opt, seen) {
+  const T = TB[b.table], sh = imp.sheets[b.sheet], out = { ok: [], bad: [], dup: 0, totals: 0 };
+  let prevDate = '';
+  sh.rows.slice(b.header + 1).forEach((r, i) => {
+    const line = b.header + 2 + i;
+    if (r.every(isBlank)) return;
+    const first = r.find(c => !isBlank(c));
+    if (typeof first === 'string' && /^\s*(grand\s*|sub\s*)?total\b/i.test(first)) { out.totals++; return; }
+    const v = {}; let err = null;
+    T.fields.forEach(f => {
+      if (err) return;
+      const col = b.map[f.k], raw = (col == null || col === '') ? '' : r[col];
+      if (f.t === 'date') {
+        let d = parseDate(raw, opt.year);
+        if (!d && !isBlank(raw)) { err = `Could not read date "${raw}"`; return; }
+        if (!d && opt.fillDate && f.k === 'date') d = prevDate;
+        v[f.k] = d; if (f.k === 'date' && d) prevDate = d;
+      } else if (f.t === 'number') {
+        const n = parseNum(raw); if (typeof n === 'number' && isNaN(n)) { err = `"${raw}" is not a number (${f.label})`; return; } v[f.k] = n;
+      } else if (f.t === 'select') {
+        let o = isBlank(raw) ? '' : matchOpt(f, raw);
+        if (o === null) { if (f.req) { err = `Unknown ${f.label} "${raw}"`; return; } o = f.def ?? ''; }
+        v[f.k] = o || (f.def ?? '');
+      } else v[f.k] = isBlank(raw) ? '' : (raw instanceof Date ? ymd(raw) : String(raw).trim());
+    });
+    if (!err) {
+      T.fields.forEach(f => { if (f.auto && v[f.k] === '') { const a = f.auto.fn(v); if (a !== '' && a != null) v[f.k] = r2(a); } });
+      const miss = T.fields.find(f => f.req && (v[f.k] === '' || v[f.k] == null));
+      if (miss) err = `Missing ${miss.label}`;
+      else if (T.validate) err = T.validate(v);
+    }
+    if (err) { out.bad.push({ line, reason: err }); return; }
+    const sig = T.key + '#' + rowSig(T, v);
+    if (opt.skipDup && (seen[sig] || 0) > 0) { seen[sig]--; out.dup++; return; }
+    out.ok.push(v);
+  });
+  return out;
+}
+function xlCompute() {
+  const seen = {};
+  if (!imp.opt.replace && imp.opt.skipDup) Object.keys(db.data).forEach(k => db.data[k].forEach(r => { const s = k + '#' + rowSig(TB[k], r); seen[s] = (seen[s] || 0) + 1; }));
+  return imp.blocks.map(b => b.table ? xlParseBlock(b, imp.opt, seen) : null);
+}
+function xlLoadSheets(sheets) {
+  imp = {
+    sheets, opt: { skipDup: true, fillDate: true, replace: false, year: new Date().getFullYear() },
+    blocks: sheets.map((s, i) => { const table = guessTable(s.name), header = detectHeaderRow(s.rows); return { sheet: i, table, header, map: table ? autoMap(table, s.rows[header] || []) : {} }; })
+  };
+}
+function readWorkbook(file) {
+  return new Promise((res, rej) => {
+    if (!window.XLSX) return rej(new Error('Excel library could not load — check your internet connection.'));
+    const fr = new FileReader();
+    fr.onload = () => {
+      try {
+        const wb = XLSX.read(fr.result, { type: 'array' });
+        res(wb.SheetNames.map(n => ({ name: n, rows: XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: '' }) })).filter(s => s.rows.some(r => r.some(c => c !== ''))));
+      } catch (e) { rej(e); }
+    };
+    fr.onerror = () => rej(fr.error); fr.readAsArrayBuffer(file);
+  });
+}
+const colLetter = c => { let s = ''; c++; while (c > 0) { const m = (c - 1) % 26; s = String.fromCharCode(65 + m) + s; c = Math.floor((c - 1) / 26); } return s; };
+function xlHTML() {
+  const res = xlCompute(), ready = res.reduce((a, r) => a + (r ? r.ok.length : 0), 0), o = imp.opt;
+  const blocks = imp.blocks.map((b, i) => {
+    const sh = imp.sheets[b.sheet], hdr = sh.rows[b.header] || [], r = res[i];
+    const ncol = Math.max(1, ...sh.rows.slice(0, 60).map(x => x.length));
+    const cn = c => { const h = String(hdr[c] ?? '').trim(); return h || 'Column ' + colLetter(c); };
+    const colOpts = sel => '<option value="">— none —</option>' + Array.from({ length: ncol }, (_, c) => `<option value="${c}"${String(sel) === String(c) ? ' selected' : ''}>${esc(cn(c))}</option>`).join('');
+    const tabOpts = '<option value="">⏭ Skip this sheet</option>' + IMPORTABLE.map(k => `<option value="${k}"${b.table === k ? ' selected' : ''}>${esc(tt(TB[k].title))}</option>`).join('');
+    let body = '';
+    if (b.table) {
+      const T = TB[b.table];
+      body = `<div class="form-grid xlmap">${T.fields.map(f => `<label class="fld"><span>${esc(f.label)}${f.req ? ' <em>*</em>' : ''}</span><select data-xl="map" data-b="${i}" data-f="${f.k}">${colOpts(b.map[f.k])}</select></label>`).join('')}</div>
+      <div class="chips" style="margin-top:12px"><div class="chip good"><span>Ready to import</span><b>${r.ok.length}</b></div>${r.dup ? `<div class="chip warn"><span>Already in ledger</span><b>${r.dup}</b></div>` : ''}${r.bad.length ? `<div class="chip bad"><span>Problems (skipped)</span><b>${r.bad.length}</b></div>` : ''}${r.totals ? `<div class="chip"><span>Total rows ignored</span><b>${r.totals}</b></div>` : ''}</div>
+      ${r.ok.length ? `<div class="tscroll" style="max-height:190px"><table class="tbl"><thead><tr>${T.fields.map(f => `<th>${esc(f.label)}</th>`).join('')}</tr></thead><tbody>${r.ok.slice(0, 4).map(row => `<tr>${T.fields.map(f => `<td>${esc(f.t === 'date' ? fmtDate(row[f.k]) : row[f.k])}</td>`).join('')}</tr>`).join('')}</tbody></table></div><p class="note">Showing first ${Math.min(4, r.ok.length)} of ${r.ok.length} rows.</p>` : ''}
+      ${r.bad.length ? `<ul class="xlbad">${r.bad.slice(0, 6).map(x => `<li>Row ${x.line}: ${esc(x.reason)}</li>`).join('')}${r.bad.length > 6 ? `<li>…and ${r.bad.length - 6} more</li>` : ''}</ul>` : ''}`;
+    }
+    return `<div class="xlblock ${b.table ? '' : 'skip'}"><div class="xlhead"><div><b>📄 ${esc(sh.name)}</b><small class="muted"> · ${sh.rows.length} rows</small></div>
+      <div class="xlctl"><label class="fld"><span>Import as</span><select data-xl="table" data-b="${i}">${tabOpts}</select></label>
+      <label class="fld" style="width:92px"><span>Header row</span><input type="number" min="1" max="${sh.rows.length}" value="${b.header + 1}" data-xl="header" data-b="${i}"></label>
+      <button class="btn sm" data-act="xlDup" data-b="${i}" title="Use this sheet again for another section">＋ Again</button>${imp.blocks.filter(x => x.sheet === b.sheet).length > 1 ? `<button class="btn sm danger" data-act="xlDrop" data-b="${i}">✕</button>` : ''}</div></div>${body}</div>`;
+  }).join('');
+  return `<div class="m-head"><h3>⬆ Import from Excel</h3><button class="x" data-act="closeModal">×</button></div>
+  <div class="m-body"><p class="muted" style="margin-top:0">We matched your sheets and columns automatically. Check each one, fix anything wrong using the dropdowns, then import. Nothing is saved until you press <b>Import</b>.</p>
+    <div class="xlopts"><label><input type="checkbox" data-xl="opt" data-o="skipDup" ${o.skipDup ? 'checked' : ''}> Skip rows already in the ledger <small>(safe to re-import an updated file)</small></label>
+      <label><input type="checkbox" data-xl="opt" data-o="fillDate" ${o.fillDate ? 'checked' : ''}> Blank date = same as the row above</label>
+      <label><input type="checkbox" data-xl="opt" data-o="replace" ${o.replace ? 'checked' : ''}> <b class="neg">Replace</b> existing entries of the imported sections</label>
+      <label>Year for dates written without one (e.g. "15 July") <input type="number" style="width:90px" value="${o.year}" data-xl="opt" data-o="year"></label></div>
+    ${blocks}
+    <div class="form-actions" style="position:sticky;bottom:-22px;background:#fff;padding:12px 0"><button class="btn primary" data-act="xlGo" ${ready ? '' : 'disabled'}>Import ${ready} row${ready === 1 ? '' : 's'}</button><button class="btn ghost" data-act="closeModal">Cancel</button></div></div>`;
+}
+function syncPutMany(list) {
+  if (!CLOUD_ON || !list.length) return;
+  const f = fsys();
+  for (let i = 0; i < list.length; i += 400) { const b = f.batch(); list.slice(i, i + 400).forEach(([t, r]) => b.set(f.collection('rows').doc(r.id), clean({ ...r, _tbl: t }))); b.commit().catch(syncErr); }
+}
+function xlApply() {
+  const res = xlCompute(), put = [], touched = new Set(); let n = 0, c = 0;
+  if (imp.opt.replace) {
+    imp.blocks.forEach((b, i) => { if (b.table && res[i].ok.length && !touched.has(b.table)) { touched.add(b.table); db.data[b.table].forEach(r => syncDel(r.id)); db.data[b.table] = []; } });
+  }
+  imp.blocks.forEach((b, i) => {
+    if (!b.table) return;
+    res[i].ok.forEach(v => { const row = { id: uid(), _t: Date.now() + (c++), ...v }; db.data[b.table].push(row); put.push([b.table, row]); n++; });
+  });
+  save(); syncPutMany(put);
+  const secs = new Set(put.map(p => p[0])).size;
+  imp = null; closeModal(); toast(n ? `Imported ${n} entries into ${secs} section${secs === 1 ? '' : 's'} ✓` : 'Nothing new to import');
+}
+function xlBook(withData) {
+  const wb = XLSX.utils.book_new();
+  const info = [['Site Ledger — Excel ' + (withData ? 'export' : 'template')], [''], ['How to use'],
+    ['1. Each sheet is one section. Keep the header row; add one entry per row below it.'],
+    ['2. Dates: 15/07/2026, 15-Jul-2026 or a real Excel date. A blank date uses the date above.'],
+    ['3. Bills (bricks, sand, steel…): enter Total and Paid. Paid less than Total = Due, more = Advance. Due/Advance is calculated for you.'],
+    ['4. Do not add totals or status columns — the website calculates them.'],
+    ['5. Upload on the website: Settings → Import from Excel. Rows already in the ledger are skipped, so re-importing is safe.'], [''], ['Sheets']];
+  IMPORTABLE.forEach(k => info.push([SHEET_NAME[k], tt(TB[k].title)]));
+  const ws0 = XLSX.utils.aoa_to_sheet(info); ws0['!cols'] = [{ wch: 26 }, { wch: 60 }]; XLSX.utils.book_append_sheet(wb, ws0, 'READ ME');
+  IMPORTABLE.forEach(k => {
+    const T = TB[k], head = T.fields.map(f => f.label);
+    const rows = withData ? sortAsc(db.data[k]).map(r => T.fields.map(f => f.t === 'date' ? (r[f.k] ? fmtDate(r[f.k]) : '') : (r[f.k] ?? ''))) : [];
+    const ws = XLSX.utils.aoa_to_sheet([head, ...rows]); ws['!cols'] = head.map(h => ({ wch: Math.max(13, h.length + 3) }));
+    XLSX.utils.book_append_sheet(wb, ws, SHEET_NAME[k]);
+  });
+  return wb;
+}
+function xlDownload(withData) {
+  if (!window.XLSX) return toast('Excel library could not load — check your internet connection.', 'err');
+  XLSX.writeFile(xlBook(withData), withData ? `${slug(db.meta.project)}-data-${todayStr()}.xlsx` : 'site-ledger-template.xlsx');
+}
+let imp = null;
+document.addEventListener('change', async e => {
+  const el = e.target;
+  if (el.id === 'xlFile') {
+    const file = el.files[0]; el.value = ''; if (!file) return;
+    try {
+      const sheets = await readWorkbook(file);
+      if (!sheets.length) return toast('That file has no data.', 'err');
+      xlLoadSheets(sheets); openModal(xlHTML);
+    } catch (x) { toast(x.message || 'Could not read that Excel file.', 'err'); }
+    return;
+  }
+  const k = el.dataset && el.dataset.xl; if (!k || !imp) return;
+  const b = imp.blocks[+el.dataset.b];
+  if (k === 'table') { b.table = el.value; b.map = b.table ? autoMap(b.table, imp.sheets[b.sheet].rows[b.header] || []) : {}; }
+  else if (k === 'header') { b.header = Math.max(0, (parseInt(el.value, 10) || 1) - 1); if (b.table) b.map = autoMap(b.table, imp.sheets[b.sheet].rows[b.header] || []); }
+  else if (k === 'map') b.map[el.dataset.f] = el.value === '' ? null : +el.value;
+  else if (k === 'opt') { const o = el.dataset.o; imp.opt[o] = el.type === 'checkbox' ? el.checked : (parseInt(el.value, 10) || imp.opt.year); }
+  refreshModal();
+});
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-act]'); if (!b) return;
+  const a = b.dataset.act;
+  if (a === 'xlTemplate') xlDownload(false);
+  else if (a === 'xlExport') xlDownload(true);
+  else if (a === 'xlImport') $('#xlFile').click();
+  else if (a === 'xlGo') xlApply();
+  else if (a === 'xlDup' && imp) { const s = imp.blocks[+b.dataset.b]; imp.blocks.splice(+b.dataset.b + 1, 0, { sheet: s.sheet, table: '', header: s.header, map: {} }); refreshModal(); }
+  else if (a === 'xlDrop' && imp) { imp.blocks.splice(+b.dataset.b, 1); refreshModal(); }
+});
+
+/* ---------------- Google sign-in + cloud sync (Firebase) ---------------- */
+const isOwner = () => !CLOUD_ON || cloud.role === 'owner';
+const canEdit = () => !CLOUD_ON || cloud.role === 'owner' || cloud.role === 'editor';
+const fsys = () => firebase.firestore();
+const clean = o => JSON.parse(JSON.stringify(o));
+function syncErr(e) { console.error(e); toast('Could not save to cloud: ' + (e.code || e.message), 'err'); }
+function syncPut(t, row) { if (CLOUD_ON) fsys().collection('rows').doc(row.id).set(clean({ ...row, _tbl: t })).catch(syncErr); }
+function syncDel(id) { if (CLOUD_ON) fsys().collection('rows').doc(id).delete().catch(syncErr); }
+function syncMeta() { if (CLOUD_ON) fsys().collection('meta').doc('main').set(clean(db.meta)).catch(syncErr); }
+function syncReplaceAll(old, next) {
+  if (!CLOUD_ON) return;
+  const f = fsys(), ops = [], keep = new Set();
+  Object.keys(next.data).forEach(t => next.data[t].forEach(r => { keep.add(r.id); ops.push(b => b.set(f.collection('rows').doc(r.id), clean({ ...r, _tbl: t }))); }));
+  Object.keys(old.data).forEach(t => old.data[t].forEach(r => { if (!keep.has(r.id)) ops.push(b => b.delete(f.collection('rows').doc(r.id))); }));
+  ops.push(b => b.set(f.collection('meta').doc('main'), clean(next.meta)));
+  for (let i = 0; i < ops.length; i += 400) { const b = f.batch(); ops.slice(i, i + 400).forEach(op => op(b)); b.commit().catch(syncErr); }
+}
+
+const G_SVG = '<svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.9 2.4 30.4 0 24 0 14.6 0 6.5 5.4 2.6 13.2l7.9 6.1C12.4 13.6 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.5 5.8c4.4-4.1 7.1-10.1 7.1-17.5z"/><path fill="#FBBC05" d="M10.5 28.7a14.5 14.5 0 0 1 0-9.4l-7.9-6.1a24 24 0 0 0 0 21.6l7.9-6.1z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.5-5.8c-2.1 1.4-4.9 2.3-8.4 2.3-6.3 0-11.6-4.1-13.5-9.8l-7.9 6.1C6.5 42.6 14.6 48 24 48z"/></svg>';
+function showGate(html) {
+  document.body.classList.add('gate'); closeModal();
+  view.innerHTML = `<div class="gate"><div class="gate-card"><div class="logo big">🏗️</div>${html}</div></div>`;
+}
+function gateLogin(msg) {
+  showGate(`<h2>Site Ledger</h2><p class="muted">Sign in with your Google account to open your construction accounts from any phone or computer.</p>
+    <button class="gbtn" data-act="signin">${G_SVG}<span>Sign in with Google</span></button>${msg ? `<p class="gerr">${esc(msg)}</p>` : ''}`);
+}
+function gateFatal(title, msg, withOut) {
+  showGate(`<h2>${esc(title)}</h2><p class="muted">${msg}</p>${withOut ? '<button class="btn" data-act="signout">Sign out / use another account</button>' : ''}`);
+}
+function authMsg(e) {
+  if (e.code === 'auth/unauthorized-domain') return `This website address (${location.hostname}) is not allowed yet. Add it in Firebase → Authentication → Settings → Authorized domains.`;
+  if (e.code === 'auth/network-request-failed') return 'No internet connection. Try again when you are online.';
+  if (e.code === 'auth/operation-not-allowed') return 'Google sign-in is not enabled in Firebase → Authentication → Sign-in method.';
+  return 'Sign-in failed: ' + (e.code || e.message);
+}
+async function signIn() {
+  const p = new firebase.auth.GoogleAuthProvider(); p.setCustomParameters({ prompt: 'select_account' });
+  try { await firebase.auth().signInWithPopup(p); }
+  catch (e) {
+    if (e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') return;
+    if (e.code === 'auth/popup-blocked' || e.code === 'auth/operation-not-supported-in-this-environment') return firebase.auth().signInWithRedirect(p);
+    gateLogin(authMsg(e));
+  }
+}
+function applyRole() { document.body.classList.toggle('ro', !canEdit()); document.body.classList.toggle('nosettings', !isOwner()); }
+function renderUserbox() {
+  const el = $('#userbox'); if (!el) return;
+  if (!CLOUD_ON || !cloud.user) { el.innerHTML = ''; return; }
+  const st = ({ saving: ['Saving…', 'warn'], offline: ['Offline', 'off'], synced: ['Synced', 'ok'] })[cloud.status] || ['', ''];
+  const u = cloud.user, ini = esc((u.displayName || u.email || '?').trim()[0].toUpperCase());
+  el.innerHTML = `${st[0] ? `<span class="sync ${st[1]}"><i></i><b>${st[0]}</b></span>` : ''}${cloud.role === 'viewer' ? '<span class="rolebadge">View only</span>' : ''}
+    <button class="avatar" data-act="signout" title="${esc(u.email)} — tap to sign out">${u.photoURL ? `<img src="${esc(u.photoURL)}" alt="" referrerpolicy="no-referrer">` : ini}</button>`;
+}
+function stopListeners() { cloud.unsubs.forEach(u => { try { u(); } catch (e) { /* ignore */ } }); cloud.unsubs = []; }
+function refreshView() {
+  if (modalFn) { const a = document.activeElement; if (!(a && $('#modalRoot').contains(a))) refreshModal(); }
+  if (cur.tab === 'update') refreshUpdate(); else if (cur.tab === 'records') renderRecordsBody(); else if (cur.tab === 'dashboard') renderDashboard();
+}
+function listenErr(e) {
+  console.error(e); stopListeners(); cloud.ready = false;
+  if (e.code === 'permission-denied') gateFatal('No access', 'The database refused access. Make sure the security rules from <b>firestore.rules</b> are published and your email has been added by the owner.', true);
+  else gateFatal('Could not load data', esc(e.code || e.message), true);
+}
+function renderTeam() {
+  const el = $('#teamList'); if (!el) return;
+  el.innerHTML = cloud.team.length ? cloud.team.map(t => `<div class="li"><div class="t"><b>${esc(t.email)}</b><small>${t.role === 'editor' ? 'Editor — can add & change entries' : 'Viewer — view & PDF only'}</small></div><button class="btn sm danger" data-act="rmTeam" data-email="${esc(t.email)}">Remove</button></div>`).join('') : '<div class="empty">Nobody else has access yet.</div>';
+}
+async function onAuth(user) {
+  stopListeners(); cloud.ready = false; cloud.role = null; cloud.user = user; cloud.team = []; cloud.status = 'idle';
+  if (!user) { db = blankDB(); applyMeta(); document.body.classList.remove('ro', 'nosettings'); renderUserbox(); gateLogin(); return; }
+  showGate('<p class="muted">Signing you in…</p>');
+  const email = (user.email || '').toLowerCase(), cacheKey = 'siteLedger.role.' + email;
+  try {
+    if (!CFG.ownerEmail) throw Object.assign(new Error('ownerEmail missing in config.js'), { code: 'config' });
+    if (email === CFG.ownerEmail.toLowerCase()) cloud.role = 'owner';
+    else { const d = await fsys().collection('access').doc(email).get(); cloud.role = d.exists ? (d.data().role === 'editor' ? 'editor' : 'viewer') : null; }
+    try { localStorage.setItem(cacheKey, cloud.role || ''); } catch (e) { /* ignore */ }
+  } catch (e) {
+    let c = null; try { c = localStorage.getItem(cacheKey); } catch (x) { /* ignore */ }
+    if (e.code === 'unavailable' && c) cloud.role = c;
+    else { gateFatal('Could not check access', esc(e.code === 'config' ? e.message : (e.code || e.message)), true); return; }
+  }
+  if (!cloud.role) { gateFatal('No access yet', `You are signed in as <b>${esc(user.email)}</b>, but this account has not been given access. Ask the owner to add this email under Settings → Team access.`, true); return; }
+  applyRole(); renderUserbox();
+  const f = fsys();
+  cloud.unsubs.push(f.collection('meta').doc('main').onSnapshot(s => {
+    if (s.exists) { db.meta = { ...DEFAULT_META, ...s.data() }; applyMeta(); if (cloud.ready) refreshView(); }
+    else if (cloud.role === 'owner' && !s.metadata.fromCache) syncMeta();
+  }, listenErr));
+  cloud.unsubs.push(f.collection('rows').onSnapshot({ includeMetadataChanges: true }, snap => {
+    cloud.status = snap.metadata.hasPendingWrites ? 'saving' : (snap.metadata.fromCache ? 'offline' : 'synced'); renderUserbox();
+    if (cloud.ready && !snap.docChanges().length) return;
+    const d = blankDB().data;
+    snap.forEach(doc => { const r = doc.data(), t = r._tbl; delete r._tbl; r.id = r.id || doc.id; r._t = r._t || 0; if (d[t]) d[t].push(r); });
+    db.data = d;
+    if (!cloud.ready) { cloud.ready = true; document.body.classList.remove('gate'); route(); } else refreshView();
+  }, listenErr));
+  if (cloud.role === 'owner') cloud.unsubs.push(f.collection('access').onSnapshot(s => { cloud.team = s.docs.map(x => ({ email: x.id, role: x.data().role })).sort((a, b) => a.email.localeCompare(b.email)); renderTeam(); }, e => console.warn(e)));
+}
+function cloudInit() {
+  firebase.initializeApp(FB);
+  try { firebase.firestore().enablePersistence({ synchronizeTabs: true }).catch(() => { /* multiple tabs / unsupported: fine */ }); } catch (e) { /* ignore */ }
+  firebase.auth().onAuthStateChanged(onAuth);
+}
+
 /* ---------------- router + init ---------------- */
 function route() {
+  if (CLOUD_ON && !cloud.ready) return;
   const p = location.hash.replace(/^#\/?/, '').split('/');
-  cur = { tab: ['dashboard', 'records', 'update', 'settings'].includes(p[0]) ? p[0] : 'dashboard', sub: p[1] || '' };
+  const tab = ['dashboard', 'records', 'update', 'settings'].includes(p[0]) ? p[0] : 'dashboard';
+  if (tab === 'update' && !canEdit()) { location.replace('#/records' + (p[1] ? '/' + p[1] : '')); return; }
+  if (tab === 'settings' && !isOwner()) { location.replace('#/dashboard'); return; }
+  cur = { tab, sub: p[1] || '' };
   $$('#nav a').forEach(a => a.classList.toggle('on', a.dataset.tab === cur.tab));
   closeModal();
   if (cur.tab === 'dashboard') renderDashboard();
@@ -777,7 +1185,12 @@ function route() {
   if (!(cur.tab === 'records' && cur.sub)) window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', route);
+if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(() => { /* optional */ });
 (async function init() {
+  if (CLOUD_ON) {
+    if (!window.firebase) { gateFatal('Could not load Google services', 'Check your internet connection and reload the page.', false); return; }
+    db = blankDB(); cloudInit(); return;
+  }
   let raw = null;
   try { raw = localStorage.getItem(LS_KEY); } catch (e) { /* storage blocked */ }
   if (raw) { try { db = normalize(JSON.parse(raw)); } catch (e) { db = blankDB(); } }
