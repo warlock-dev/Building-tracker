@@ -3,7 +3,7 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // >>> CHANGE THIS to your own Google email (lowercase) <<<
-    function ownerEmail() { return 'you@gmail.com'; }
+    function ownerEmail() { return 'warlocknok@gmail.com'; }
 
     function signedIn() { return request.auth != null && request.auth.token.email_verified == true; }
     function me() { return request.auth.token.email.lower(); }
