@@ -10,6 +10,11 @@ credit shop, munshi cash register, creditor funding, local labour, labour head a
 * **Steel** – click any size (8 / 10 / 12 / 16 mm) to open a popup showing stock, which day it was used and on what work.
 * **Settings** – names, contract value, backup / restore.
 
+## 🏗️ Sections
+Bricks · Sand · Aggregate · Steel (8/10/12/16 mm + stirrup rings, bundles *and* loose pieces) · Soil filling · Contractor payments · Salary · Credit shop ·
+Munshi cash register · Creditor (Rocky) · Local labour · Labour head · **Other expenses** (JCB, plumbing, electrical, hardware…) · **JCB log** · Cement.
+Settings → *Pieces in one bundle* (optional) lets loose pieces and bundles be added together for steel stock.
+
 ## 📊 Moving your existing Excel data in
 Settings → **Import from Excel**. Pick your .xlsx (or .csv): each sheet is matched to a section and its columns are matched automatically
 (title rows are skipped, dates like `15/07/2026`, `15 Jul`, real Excel dates and amounts like `₹ 72,000` are understood, "Total" rows are ignored).
