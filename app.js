@@ -5,7 +5,14 @@
    ===================================================================== */
 const LS_KEY = 'siteLedger.v1';
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const STEEL_SIZES = ['8mm','10mm','12mm','16mm'];
+const STEEL_SIZES = ['8mm','10mm','12mm','16mm','Rings'];
+const STEEL_UNITS = ['Bundles','Pcs'];
+const steelName = sz => sz === 'Rings' ? 'Stirrup rings' : sz + ' steel';
+const unitKey = u => /pc/i.test(u || '') ? 'p' : 'b';
+const qsum = rows => rows.reduce((a, r) => { a[unitKey(r.unit)] += num(r.qty); return a; }, { b: 0, p: 0 });
+const qdiff = (a, b) => ({ b: r2(a.b - b.b), p: r2(a.p - b.p) });
+const qNeg = q => q.b < 0 || q.p < 0;
+const fmtQ = q => { const o = []; if (q.b || !q.p) o.push(fmtNum(q.b) + (q.b === 1 ? ' bundle' : ' bundles')); if (q.p) o.push(fmtNum(q.p) + ' pcs'); return o.join(' · '); };
 const PAY_MODES = ['Cash','UPI','Bank transfer','Cheque'];
 /* Cloud sync is ON when config.js contains a Firebase apiKey; otherwise the app runs locally in this browser. */
 const CFG = window.SITE_CONFIG || {};
@@ -21,6 +28,7 @@ const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; }
 const r2 = n => Math.round(num(n) * 100) / 100;
 const fmtNum = n => r2(n).toLocaleString('en-IN');
 const inr = n => (num(n) < 0 ? '-₹' : '₹') + fmtNum(Math.abs(num(n)));
+const inrShort = n => n >= 1e7 ? '₹' + r2(n / 1e7) + ' Cr' : n >= 1e5 ? '₹' + r2(n / 1e5) + ' L' : inr(n);
 const rs = n => (num(n) < 0 ? '-Rs. ' : 'Rs. ') + fmtNum(Math.abs(num(n)));
 const pad = n => String(n).padStart(2, '0');
 const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
@@ -72,6 +80,7 @@ function billTable(o) {
   };
 }
 
+const OTHER_CATS = ['JCB / Machinery', 'Plumbing & Boring', 'Electrical', 'Hardware & Materials', 'Other'];
 const cumulate = (key, outKey) => rows => { let c = 0; return rows.map(r => ({ ...r, [outKey]: (c += num(r[key])) })); };
 
 const TABLE_LIST = [
@@ -80,16 +89,16 @@ const TABLE_LIST = [
   billTable({
     key: 'aggregate', title: 'Aggregate Procurement', qty: 'Quantity', rate: 'Rate (₹ per unit)', sumQty: false,
     extra: [
-      { k: 'material', label: 'Material', t: 'select', opts: ['20mm', 'Dust', 'Other'], req: 1 },
+      { k: 'material', label: 'Material', t: 'select', opts: ['20mm', '5/8 Chips', 'Dust', 'Other'], req: 1 },
       { k: 'unit', label: 'Unit', t: 'select', opts: ['Trip', 'Ton', 'Brass', 'CFT'], def: 'Trip' }
     ]
   }),
-  billTable({ key: 'steelBuy', title: 'Steel Purchases', qty: 'Bundles', rate: 'Rate (₹ per bundle)', extra: [{ k: 'size', label: 'Size', t: 'select', opts: STEEL_SIZES, req: 1 }] }),
+  billTable({ key: 'steelBuy', title: 'Steel Purchases', qty: 'Quantity', rate: 'Rate (₹ per unit)', sumQty: false, extra: [{ k: 'size', label: 'Size', t: 'select', opts: STEEL_SIZES, req: 1 }, { k: 'unit', label: 'Unit', t: 'select', opts: STEEL_UNITS, def: 'Bundles' }] }),
   {
     key: 'steelUse', title: 'Steel Usage — where it was used',
-    fields: [fDate, { k: 'size', label: 'Size', t: 'select', opts: STEEL_SIZES, req: 1 }, { k: 'qty', label: 'Bundles used', t: 'number', req: 1 },
+    fields: [fDate, { k: 'size', label: 'Size', t: 'select', opts: STEEL_SIZES, req: 1 }, { k: 'qty', label: 'Quantity used', t: 'number', req: 1 }, { k: 'unit', label: 'Unit', t: 'select', opts: STEEL_UNITS, def: 'Bundles' },
       { k: 'work', label: 'Used on (work / place)', t: 'text', req: 1, ph: 'e.g. Slab steel, column C3' }, fNote],
-    cols: [cDate, { k: 'size', label: 'Size' }, { k: 'qty', label: 'Bundles used', t: 'num', sum: 1 }, { k: 'work', label: 'Work' }, cNote]
+    cols: [cDate, { k: 'size', label: 'Size' }, { k: 'qty', label: 'Used', t: 'num' }, { k: 'unit', label: 'Unit' }, { k: 'work', label: 'Work' }, cNote]
   },
   billTable({ key: 'soil', title: 'Soil Filling — Tractor Trips per Day', qty: 'Tractor trips', rate: 'Rate (₹ per trip)', partyLabel: 'Supplier / Driver',
     extra: [{ k: 'area', label: 'Filling area', t: 'text', ph: 'optional' }] }),
@@ -160,8 +169,27 @@ const TABLE_LIST = [
   },
   {
     key: 'lhead', title: 'Labour Supplied & Payment',
-    fields: [fDate, { k: 'labour', label: 'Labour (nos.)', t: 'number' }, { k: 'mistri', label: 'Mistri (nos.)', t: 'number' }, { k: 'amount', label: 'Payment (₹)', t: 'number', req: 1 }, fNote],
+    fields: [fDate, { k: 'labour', label: 'Labour (nos.)', t: 'number' }, { k: 'mistri', label: 'Mistri (nos.)', t: 'number' }, { k: 'amount', label: 'Payment (₹)', t: 'number', hint: 'leave blank on days with no payment' }, fNote],
     cols: [cDate, { k: 'labour', label: 'Labour', t: 'num', sum: 1 }, { k: 'mistri', label: 'Mistri', t: 'num', sum: 1 }, { k: 'amount', label: 'Payment', t: 'money', sum: 1 }, cNote]
+  },
+  {
+    key: 'other', title: 'Other Expenses (JCB, plumbing, electrical, hardware…)', bill: true, derive: billDerive,
+    fields: [fDate, { k: 'category', label: 'Category', t: 'select', opts: OTHER_CATS, req: 1 }, { k: 'party', label: 'Payee / vendor', t: 'text', ph: 'optional' },
+      { k: 'work', label: 'Particulars', t: 'text', ph: 'what was it for' },
+      { k: 'total', label: 'Total amount (₹)', t: 'number' }, { k: 'paid', label: 'Paid (₹)', t: 'number', hint: 'Less than total → Due · more → Advance' }, fNote],
+    cols: [cDate, { k: 'category', label: 'Category' }, { k: 'party', label: 'Payee' }, { k: 'work', label: 'Particulars' },
+      { k: 'total', label: 'Total', t: 'money', sum: 1 }, { k: 'paid', label: 'Paid', t: 'money', sum: 1 }, { k: 'status', label: 'Status', t: 'status' }, cNote],
+    validate: v => (num(v.total) || num(v.paid)) ? null : 'Enter a total or a paid amount.'
+  },
+  {
+    key: 'jcb', title: 'JCB / Machine Log',
+    fields: [fDate, { k: 'opening', label: 'Opening meter', t: 'number' }, { k: 'closing', label: 'Closing meter', t: 'number' },
+      { k: 'hours', label: 'Hours worked', t: 'number', req: 1, hint: 'Auto = closing − opening · edit if different',
+        auto: { deps: ['opening', 'closing'], fn: v => (v.opening === '' || v.closing === '') ? '' : Math.round((num(v.closing) - num(v.opening)) * 10) / 10 } },
+      { k: 'diesel', label: 'Diesel (litres)', t: 'number' }, { k: 'pay', label: 'Payment', t: 'select', opts: ['Paid', 'Site Account', 'Pending'], def: 'Paid' },
+      { k: 'work', label: 'Work done', t: 'text', req: 1 }, fNote],
+    cols: [cDate, { k: 'opening', label: 'Opening', t: 'num' }, { k: 'closing', label: 'Closing', t: 'num' }, { k: 'hours', label: 'Hours', t: 'num', sum: 1 },
+      { k: 'diesel', label: 'Diesel (L)', t: 'num', sum: 1 }, { k: 'pay', label: 'Payment' }, { k: 'work', label: 'Work' }, cNote]
   },
   {
     key: 'cement', title: 'Cement Register (bags)',
@@ -174,7 +202,7 @@ const TABLE_LIST = [
 const TB = Object.fromEntries(TABLE_LIST.map(t => [t.key, t]));
 
 /* ---------------- data ---------------- */
-const DEFAULT_META = { project: 'My Construction Site', site: '', contractor: 'Contractor', contractValue: 0, munshi: 'Munshi', labourHead: 'Labour Head', creditor: 'Rocky Singhania', shop: 'Scientific' };
+const DEFAULT_META = { ppb: {}, project: 'My Construction Site', site: '', contractor: 'Contractor', contractValue: 0, munshi: 'Munshi', labourHead: 'Labour Head', creditor: 'Rocky Singhania', shop: 'Scientific' };
 let db = null;
 let lastDate = todayStr();
 let cur = { tab: 'dashboard', sub: '' };
@@ -214,6 +242,7 @@ const CATS = [
   { id: 'salary', sec: 'salary', label: 'Salary', icon: '🧾', color: '#8b5cf6', paidOnly: 'salary' },
   { id: 'cash', sec: 'cash', label: 'Munshi Expenses', icon: '👛', color: '#ec4899', paidOnly: 'cashSpent' },
   { id: 'misc', sec: 'misc', label: 'Local Labour', icon: '🔨', color: '#84cc16', paidOnly: 'misc' },
+  { id: 'other', sec: 'other', label: 'Other Expenses', icon: '🧰', color: '#64748b', bill: 'other' },
   { id: 'lhead', sec: 'lhead', label: 'Labour Head', icon: '👥', color: '#f97316', paidOnly: 'lhead' }
 ];
 function catStats(c) {
@@ -228,10 +257,14 @@ function catStats(c) {
   const t = sum(R(c.paidOnly), 'amount');
   return { billed: t, paid: t, due: 0, adv: 0 };
 }
+function normQ(q, sz) {                     // if pieces-per-bundle is known, express as whole bundles + pcs
+  const k = num((db.meta.ppb || {})[sz]); if (!(k > 0)) return q;
+  const t = r2(q.b * k + q.p), a = Math.abs(t), sg = t < 0 ? -1 : 1;
+  return { b: sg * Math.floor(a / k + 1e-9), p: sg * r2(a - Math.floor(a / k + 1e-9) * k) };
+}
 function steelStock(size) {
-  const b = R('steelBuy').filter(r => r.size === size), u = R('steelUse').filter(r => r.size === size);
-  const bought = sum(b, 'qty'), used = sum(u, 'qty');
-  return { size, bought, used, left: r2(bought - used) };
+  const bought = qsum(R('steelBuy').filter(r => r.size === size)), used = qsum(R('steelUse').filter(r => r.size === size));
+  return { size, bought: normQ(bought, size), used: normQ(used, size), left: normQ(qdiff(bought, used), size) };
 }
 function stats() {
   const cats = CATS.map(c => ({ ...c, ...catStats(c) }));
@@ -264,7 +297,7 @@ const SECTIONS = [
   { id: 'bricks', icon: '🧱', short: 'Bricks', title: 'Bricks', tables: ['bricks'], lines: () => billLines('bricks', { label: 'Bricks received', key: 'qty' }) },
   { id: 'sand', icon: '🚜', short: 'Sand', title: 'Sand — Tractor Trips', tables: ['sand'], lines: () => billLines('sand', { label: 'Trips', key: 'qty' }) },
   { id: 'aggregate', icon: '⛰️', short: 'Aggregate', title: 'Aggregate (20mm / Dust)', tables: ['aggregate'], lines: () => billLines('aggregate') },
-  { id: 'steel', icon: '🏗️', short: 'Steel', title: 'Steel (8 / 10 / 12 / 16 mm)', tables: ['steelBuy', 'steelUse'], lines: () => billLines('steelBuy', { label: 'Bundles bought', key: 'qty' }) },
+  { id: 'steel', icon: '🏗️', short: 'Steel', title: 'Steel (8 / 10 / 12 / 16 mm & rings)', tables: ['steelBuy', 'steelUse'], lines: () => [['Bought', fmtQ(qsum(R('steelBuy'))), '', 'text'], ...billLines('steelBuy')] },
   { id: 'soil', icon: '🌍', short: 'Soil Filling', title: 'Soil Filling — Tractor Trips', tables: ['soil'], lines: () => billLines('soil', { label: 'Trips', key: 'qty' }) },
   { id: 'contractor', icon: '👷', short: 'Contractor', title: m => `Contractor — ${m.contractor}`, tables: ['contractorPay'],
     lines: () => { const s = stats().contractor; const o = [['Total taken', s.taken, 'good']]; if (s.value > 0) o.push(['Contract value', s.value], ['Balance to give', s.bal, s.bal < 0 ? 'bad' : 'warn']); return o; } },
@@ -279,6 +312,9 @@ const SECTIONS = [
   { id: 'misc', icon: '🔨', short: 'Local Labour', title: 'Local Labour — Misc Work', tables: ['misc'], lines: () => [['Entries', R('misc').length, '', 'num'], ['Amount', sum(R('misc'), 'amount')]] },
   { id: 'lhead', icon: '👥', short: 'Labour Head', title: m => `Labour Head — ${m.labourHead}`, tables: ['lhead'],
     lines: () => [['Labour days', sum(R('lhead'), 'labour'), '', 'num'], ['Mistri days', sum(R('lhead'), 'mistri'), '', 'num'], ['Paid', sum(R('lhead'), 'amount'), 'good']] },
+  { id: 'other', icon: '🧰', short: 'Other Expenses', title: 'Other Expenses', tables: ['other'], lines: () => billLines('other') },
+  { id: 'jcb', icon: '🚧', short: 'JCB Log', title: 'JCB / Machine Log', tables: ['jcb'],
+    lines: () => [['Hours', sum(R('jcb'), 'hours'), '', 'num'], ['Diesel (L)', sum(R('jcb'), 'diesel'), '', 'num'], ['Entries', R('jcb').length, '', 'num']] },
   { id: 'cement', icon: '📦', short: 'Cement', title: 'Cement Stock', tables: ['cement'],
     lines: () => { const s = stats().cement; return [['Received (bags)', s.rec, '', 'num'], ['Used (bags)', s.used, '', 'num'], ['In stock (bags)', s.left, s.left < 0 ? 'bad' : 'good', 'num']]; } }
 ];
@@ -345,7 +381,7 @@ function chipsHTML(lines) {
   return `<div class="chips">${lines.map(([l, v, tone, kind]) => `<div class="chip ${tone || ''}"><span>${esc(l)}</span><b>${esc(fmtKind(v, kind))}</b></div>`).join('')}</div>`;
 }
 function steelChips() {
-  return `<div class="chips">${STEEL_SIZES.map(sz => { const s = steelStock(sz); return `<button class="chip steelchip" data-act="steel" data-size="${sz}"><span>${sz} steel</span><b>${fmtNum(s.left)} bundles left</b><u>Usage details →</u></button>`; }).join('')}</div>`;
+  return `<div class="chips">${STEEL_SIZES.map(sz => { const s = steelStock(sz); return `<button class="chip steelchip" data-act="steel" data-size="${sz}"><span>${steelName(sz)}</span><b>${fmtQ(s.left)} left</b><u>Usage details →</u></button>`; }).join('')}</div>`;
 }
 const secTopHTML = S => chipsHTML(S.lines()) + (S.id === 'steel' ? steelChips() : '');
 
@@ -429,7 +465,7 @@ function donutHTML(cats, total) {
   const segs = cats.filter(c => c.billed > 0).map(c => { const a = acc / total * 100; acc += c.billed; return `${c.color} ${a}% ${acc / total * 100}%`; });
   const legend = [...cats].filter(c => c.billed > 0).sort((a, b) => b.billed - a.billed)
     .map(c => `<li><i style="background:${c.color}"></i>${c.icon} ${esc(c.label)}<span>${Math.round(c.billed / total * 100)}%</span></li>`).join('');
-  return `<div class="donut-wrap"><div class="donut" style="background:conic-gradient(${segs.join(',')})"><div class="donut-in"><b>${inr(total)}</b><span>total</span></div></div><ul class="legend">${legend}</ul></div>`;
+  return `<div class="donut-wrap"><div class="donut" style="background:conic-gradient(${segs.join(',')})"><div class="donut-in"><b>${inrShort(total)}</b><span>total</span></div></div><ul class="legend">${legend}</ul></div>`;
 }
 function recentItems() {
   const items = [];
@@ -438,7 +474,7 @@ function recentItems() {
     R(T.key).forEach(r => {
       let amt;
       if (T.key === 'cement') amt = (num(r.received) ? '+' + fmtNum(r.received) + ' bags ' : '') + (num(r.used) ? '−' + fmtNum(r.used) + ' bags' : '');
-      else if (T.key === 'steelUse') amt = fmtNum(r.qty) + ' bundles used';
+      else if (T.key === 'steelUse') amt = fmtNum(r.qty) + (unitKey(r.unit) === 'p' ? ' pcs' : ' bundles') + ' used';
       else { const a = T.bill ? (num(r.total) || num(r.paid)) : num(r.amount); amt = a ? inr(a) : ''; }
       items.push({ date: r.date, _t: r._t || 0, sec: S.id, title: tt(S.short) === S.short ? S.short : S.short, label: r.party || r.item || r.particular || r.name || r.work || r.size || r.material || '', amt });
     });
@@ -458,7 +494,7 @@ function renderDashboard() {
     .map(c => `<a class="li" href="#/update/${c.sec}"><div class="t"><b>${c.icon} ${esc(c.label)}</b><small>Billed ${inr(c.billed)} · Paid ${inr(c.paid)}</small></div><div class="a ${c.due > 0 ? 'neg' : ''}">${c.due > 0 ? 'Due ' + inr(c.due) : 'Advance ' + inr(c.adv)}</div></a>`).join('');
   const recent = recentItems().map(i => `<a class="li" href="#/records/${i.sec}"><div class="d">${fmtDate(i.date).slice(0, 6)}</div><div class="t"><b>${esc(i.title)}</b><small>${esc(i.label)}</small></div><div class="a">${esc(i.amt)}</div></a>`).join('');
   const stockCard = (ic, l, v, sub, href, cls = '') => `<a class="stock" href="${href}"><div class="s-ic">${ic}</div><div><div class="s-l">${l}</div><div class="s-v ${cls}">${v}</div><div class="s-s">${sub}</div></div></a>`;
-  const steel = s.steel.map(x => `<button class="stock" data-act="steel" data-size="${x.size}"><div class="s-ic">🏗️</div><div><div class="s-l">${x.size} steel</div><div class="s-v ${x.left < 0 ? 'neg' : ''}">${fmtNum(x.left)} <small style="font-size:12px;font-weight:600">bundles</small></div><div class="s-s">Bought ${fmtNum(x.bought)} · Used ${fmtNum(x.used)}</div><div class="s-link">View usage details →</div></div></button>`).join('');
+  const steel = s.steel.map(x => `<button class="stock" data-act="steel" data-size="${x.size}"><div class="s-ic">🏗️</div><div><div class="s-l">${steelName(x.size)}</div><div class="s-v ${qNeg(x.left) ? 'neg' : ''}" style="font-size:17px">${fmtQ(x.left)}</div><div class="s-s">Bought ${fmtQ(x.bought)} · Used ${fmtQ(x.used)}</div><div class="s-link">View usage details →</div></div></button>`).join('');
   const contr = s.contractor;
   view.innerHTML = `<div class="page">
     <div class="kpis">
@@ -527,7 +563,10 @@ function renderSettings() {
     <form id="metaForm"><div class="form-grid">
       ${f('project', 'Project name')}${f('site', 'Site / location')}${f('contractor', 'Contractor name')}${f('contractValue', 'Contract value (₹)', 'number', 'Optional — shows balance on dashboard')}
       ${f('munshi', 'Munshi name')}${f('labourHead', 'Labour head name')}${f('creditor', 'Creditor / financier')}${f('shop', 'Credit shop name')}
-    </div><div class="form-actions"><button class="btn primary" type="submit">Save details</button></div></form></div>`;
+    </div>
+    <h4 style="margin:18px 0 4px;font-size:13px">Steel — pieces in one bundle <small class="muted">(optional; lets loose pieces and bundles be added together)</small></h4>
+    <div class="form-grid">${STEEL_SIZES.map(sz => `<label class="fld"><span>${esc(steelName(sz))}</span><input name="ppb_${sz}" type="number" min="0" step="any" value="${esc((m.ppb || {})[sz] || '')}" placeholder="unknown"></label>`).join('')}</div>
+    <div class="form-actions"><button class="btn primary" type="submit">Save details</button></div></form></div>`;
   const team = CLOUD_ON ? `<div class="card" style="margin-top:16px"><h3>Team access</h3>
     <p class="note" style="margin-top:0">People who can open this ledger by signing in with their Google account. <b>Editor</b> can add and change entries. <b>Viewer</b> can only look and download PDFs. You (${esc(CFG.ownerEmail || '')}) always have full access.</p>
     <div id="teamList" class="list"></div>
@@ -567,11 +606,11 @@ function toast(msg, type) { const t = $('#toast'); t.textContent = msg; t.classN
 function steelModal(size) {
   openModal(() => {
     const s = steelStock(size);
-    return `<div class="m-head"><h3>🏗️ ${size} steel — stock &amp; usage</h3><div><button class="btn sm" data-act="pdfSteel" data-size="${size}">⬇ PDF</button> <button class="x" data-act="closeModal">×</button></div></div>
+    return `<div class="m-head"><h3>🏗️ ${steelName(size)} — stock &amp; usage</h3><div><button class="btn sm" data-act="pdfSteel" data-size="${size}">⬇ PDF</button> <button class="x" data-act="closeModal">×</button></div></div>
     <div class="m-body">
-      ${chipsHTML([['Bought (bundles)', s.bought, '', 'num'], ['Used (bundles)', s.used, 'warn', 'num'], ['In stock (bundles)', s.left, s.left < 0 ? 'bad' : 'good', 'num']])}
+      ${chipsHTML([['Bought', fmtQ(s.bought), '', 'text'], ['Used', fmtQ(s.used), 'warn', 'text'], ['In stock', fmtQ(s.left), qNeg(s.left) ? 'bad' : 'good', 'text']])}
       <h4>Where it was used — day-wise</h4>${tableHTML(TB.steelUse, { filter: r => r.size === size, actions: true })}
-      <h4>Record usage of ${size}</h4>${formHTML(TB.steelUse, { fixed: { size } })}
+      <h4>Record usage — ${steelName(size)}</h4>${formHTML(TB.steelUse, { fixed: { size } })}
       <h4>Purchases of ${size}</h4>${tableHTML(TB.steelBuy, { filter: r => r.size === size })}
     </div>`;
   });
@@ -634,7 +673,7 @@ function pdfSection(doc, y, S) {
     y = pdfEnsure(doc, y, 90);
     doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(71, 85, 105); doc.text('STEEL STOCK BY SIZE', PM, y); y += 6;
     const st = STEEL_SIZES.map(steelStock);
-    y = pdfTable(doc, y, ['Size', 'Bought (bundles)', 'Used (bundles)', 'In stock (bundles)'], st.map(s => [s.size, fmtNum(s.bought), fmtNum(s.used), fmtNum(s.left)]), null, { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' } });
+    y = pdfTable(doc, y, ['Size', 'Bought', 'Used', 'In stock'], st.map(s => [steelName(s.size), fmtQ(s.bought), fmtQ(s.used), fmtQ(s.left)]), null, {});
   }
   return y;
 }
@@ -668,7 +707,7 @@ function pdfSections(ids) {
     y = pdfHead(doc, y, 'Stock & balances', null);
     y = pdfTable(doc, y, ['Item', 'Value'], [
       ['Cement in stock', fmtNum(s.cement.left) + ' bags'],
-      ...s.steel.map(x => [`Steel ${x.size} in stock`, fmtNum(x.left) + ' bundles']),
+      ...s.steel.map(x => [`${steelName(x.size)} in stock`, fmtQ(x.left)]),
       [`${db.meta.munshi} — cash left`, rs(s.munshi.left)],
       [`${db.meta.contractor} — total taken`, rs(s.contractor.taken)],
       [`${db.meta.creditor} — outstanding`, rs(s.credit.bal)]
@@ -681,9 +720,9 @@ function pdfSections(ids) {
 }
 function pdfSteel(size) {
   const doc = newDoc(); if (!doc) return;
-  let y = pdfTitle(doc, `${db.meta.project} — ${size} Steel`);
+  let y = pdfTitle(doc, `${db.meta.project} — ${steelName(size)}`);
   const s = steelStock(size);
-  y = pdfHead(doc, y, 'Stock', `Bought: ${fmtNum(s.bought)} bundles     |     Used: ${fmtNum(s.used)} bundles     |     In stock: ${fmtNum(s.left)} bundles`);
+  y = pdfHead(doc, y, 'Stock', `Bought: ${fmtQ(s.bought)}     |     Used: ${fmtQ(s.used)}     |     In stock: ${fmtQ(s.left)}`);
   y = pdfHead(doc, y, 'Where it was used', null, 11); y = pdfTableFor(doc, y, TB.steelUse, r => r.size === size);
   y = pdfHead(doc, y, 'Purchases', null, 11); pdfTableFor(doc, y, TB.steelBuy, r => r.size === size);
   pdfFinish(doc, `${slug(db.meta.project)}_steel-${size}_${todayStr()}.pdf`);
@@ -752,8 +791,9 @@ document.addEventListener('submit', e => {
     f.reset();
   } else if (f.id === 'metaForm') {
     e.preventDefault(); const fd = new FormData(f);
-    Object.keys(DEFAULT_META).forEach(k => { db.meta[k] = k === 'contractValue' ? num(fd.get(k)) : String(fd.get(k) ?? '').trim() || DEFAULT_META[k]; });
-    save(); syncMeta(); applyMeta(); toast('Details saved ✓');
+    Object.keys(DEFAULT_META).forEach(k => { if (k === 'ppb') return; db.meta[k] = k === 'contractValue' ? num(fd.get(k)) : String(fd.get(k) ?? '').trim() || DEFAULT_META[k]; });
+    db.meta.ppb = {}; STEEL_SIZES.forEach(sz => { const v = num(fd.get('ppb_' + sz)); if (v > 0) db.meta.ppb[sz] = v; });
+    save(); syncMeta(); applyMeta(); toast('Details saved ✓'); if (cur.tab === 'settings') renderSettings();
   }
 });
 document.addEventListener('input', e => {
@@ -795,7 +835,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape' && modalFn) c
 document.addEventListener('mousedown', e => { if (e.target.classList && e.target.classList.contains('m-back')) closeModal(); });
 
 /* ---------------- Excel import / export ---------------- */
-const SHEET_NAME = { bricks: 'Bricks', sand: 'Sand', aggregate: 'Aggregate', steelBuy: 'Steel Purchases', steelUse: 'Steel Usage', soil: 'Soil Filling', contractorPay: 'Contractor Payments', salary: 'Salary', shopBuy: 'Shop Credit Items', shopPay: 'Shop Payments', cashGiven: 'Munshi Cash Given', cashSpent: 'Munshi Expenses', creditIn: 'Creditor Contributions', creditOut: 'Creditor Repayments', misc: 'Local Labour Misc', lhead: 'Labour Head', cement: 'Cement' };
+const SHEET_NAME = { bricks: 'Bricks', sand: 'Sand', aggregate: 'Aggregate', steelBuy: 'Steel Purchases', steelUse: 'Steel Usage', other: 'Other Expenses', jcb: 'JCB Log', soil: 'Soil Filling', contractorPay: 'Contractor Payments', salary: 'Salary', shopBuy: 'Shop Credit Items', shopPay: 'Shop Payments', cashGiven: 'Munshi Cash Given', cashSpent: 'Munshi Expenses', creditIn: 'Creditor Contributions', creditOut: 'Creditor Repayments', misc: 'Local Labour Misc', lhead: 'Labour Head', cement: 'Cement' };
 const IMPORTABLE = Object.keys(SHEET_NAME);
 const norm = s => String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 const SYN = {
@@ -814,6 +854,8 @@ const SYN = {
   amount: ['amount', 'paid', 'payment', 'amountpaid', 'cash', 'given', 'spent', 'expense', 'received', 'total', 'rs', 'value'],
   item: ['item', 'items', 'particular', 'particulars', 'description', 'material', 'article'],
   particular: ['particular', 'particulars', 'item', 'spenton', 'detail', 'details', 'description', 'expense', 'head'],
+  category: ['category', 'head', 'expensecategory'], opening: ['openingmeter', 'opening', 'openmeter'], closing: ['closingmeter', 'closing', 'closemeter'],
+  hours: ['hours', 'operatinghours', 'hrs', 'runtime'], diesel: ['diesel', 'dieselitres', 'litres', 'fuel'], pay: ['paymentstatus', 'status'],
   mode: ['mode', 'paymentmode', 'by'], received: ['received', 'receiving', 'receive', 'in', 'incoming', 'inward', 'stockin', 'receipt'],
   used: ['used', 'usage', 'issue', 'issued', 'consumed', 'out', 'outward'], labour: ['labour', 'labourers', 'labor', 'laborers', 'helper', 'helpers'], mistri: ['mistri', 'mason', 'masons', 'mistris']
 };
@@ -823,6 +865,8 @@ function guessTable(name) {
   const has = (...w) => w.some(x => n.includes(x));
   if (has('readme', 'instruction', 'summary', 'dashboard')) return '';
   if (has('cement')) return 'cement';
+  if (has('jcb', 'machine')) return 'jcb';
+  if (has('otherexp', 'miscexp')) return 'other';
   if (has('brick')) return 'bricks';
   if (has('sand')) return 'sand';
   if (has('aggreg', 'gitti', 'dust', '20mm')) return 'aggregate';
@@ -889,9 +933,12 @@ function parseNum(v) {
 function matchOpt(f, v) {
   const s = String(v ?? '').trim(); if (!s) return '';
   const hit = f.opts.find(o => norm(o) === norm(s)); if (hit) return hit;
-  if (f.k === 'size') { const m = s.match(/(\d{1,2})/); if (m && f.opts.includes(m[1] + 'mm')) return m[1] + 'mm'; return null; }
+  if (f.k === 'size') { if (/ring|stirrup/i.test(s) && f.opts.includes('Rings')) return 'Rings'; const m = s.match(/(\d{1,2})/); if (m && f.opts.includes(m[1] + 'mm')) return m[1] + 'mm'; return null; }
+  if (f.k === 'category') return f.opts.find(o => o.toLowerCase().includes(s.toLowerCase().slice(0, 4))) || 'Other';
+  if (f.k === 'pay') return /site/i.test(s) ? 'Site Account' : /pend|due|baki/i.test(s) ? 'Pending' : 'Paid';
   if (f.k === 'material') return /20/.test(s) ? '20mm' : /dust/i.test(s) ? 'Dust' : 'Other';
   if (f.k === 'mode') return /upi|gpay|phonepe|paytm|bhim/i.test(s) ? 'UPI' : /bank|neft|rtgs|imps|online|transfer/i.test(s) ? 'Bank transfer' : /chq|cheque|check/i.test(s) ? 'Cheque' : /cash/i.test(s) ? 'Cash' : null;
+  if (f.k === 'unit' && f.opts.includes('Bundles')) return /pc|piece|loose|unit/i.test(s) ? 'Pcs' : 'Bundles';
   if (f.k === 'unit') return /ton|tonne/i.test(s) ? 'Ton' : /brass/i.test(s) ? 'Brass' : /cft|cubic/i.test(s) ? 'CFT' : /trip|tractor|trolley/i.test(s) ? 'Trip' : null;
   return null;
 }
