@@ -21,10 +21,10 @@ Settings → **Import from Excel**. Pick your .xlsx (or .csv): each sheet is mat
 Review the preview, fix any dropdown, press **Import**. Re-importing an updated file skips rows already there.
 **Blank Excel template** gives sheets with the exact columns; **Export all data to Excel** downloads everything you have entered.
 
-## ☁️ Google sign-in & cloud sync (recommended)
+## ☁️ Cloud sync (recommended)
 
-Follow **SETUP-GOOGLE.md** (≈10 min, free). Then you sign in with Google on any phone/PC, data is saved in the cloud and live-synced,
-works offline, can be shared with your munshi / partner as *Editor* or *Viewer*, and the site installs on a phone like an app.
+Follow **SETUP-CLOUD.md** (≈5 min, free). Anyone with the link opens the site (optional name box), data is saved in your Firebase cloud database and live-synced to every phone/PC,
+works offline, and the site installs on a phone like an app.
 Without that setup the site still works in **local-only mode** (data stays in one browser) as described below.
 
 ## Put it online (GitHub Pages, free)

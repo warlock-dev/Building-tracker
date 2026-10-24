@@ -1,30 +1,9 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-
-    // >>> CHANGE THIS to your own Google email (lowercase) <<<
-    function ownerEmail() { return 'warlocknok@gmail.com'; }
-
-    function signedIn() { return request.auth != null && request.auth.token.email_verified == true; }
-    function me() { return request.auth.token.email.lower(); }
-    function isOwner() { return signedIn() && me() == ownerEmail(); }
-    function accessDoc() { return get(/databases/$(database)/documents/access/$(me())).data; }
-    function isMember() { return signedIn() && exists(/databases/$(database)/documents/access/$(me())); }
-    function canRead() { return isOwner() || isMember(); }
-    function canEdit() { return isOwner() || (isMember() && accessDoc().role == 'editor'); }
-
-    // who may use the ledger (document id = lowercase email). Only the owner manages it.
-    match /access/{email} {
-      allow read: if signedIn() && (me() == email || isOwner());
-      allow write: if isOwner();
-    }
-    match /meta/{id} {
-      allow read: if canRead();
-      allow write: if canEdit();
-    }
-    match /rows/{id} {
-      allow read: if canRead();
-      allow write: if canEdit();
-    }
+    // Open access: anyone who has the website link can read and edit the ledger.
+    // (No sign-in. Data lives in this Firebase project, not in anyone's Google account.)
+    match /rows/{id} { allow read, write: if true; }
+    match /meta/{id} { allow read, write: if true; }
   }
 }

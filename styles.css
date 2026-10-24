@@ -259,3 +259,12 @@ body.gate .top{display:none}
 .xlbad{margin:8px 0 0;padding-left:18px;color:var(--red);font-size:12.5px}
 .btn[disabled]{opacity:.5;pointer-events:none}
 @media (max-width:860px){.xlctl{width:100%}.xlctl .fld:first-child{flex:1;min-width:0}}
+
+/* open-access name dialog + name chip */
+.openbtn{width:100%;justify-content:center;gap:10px;background:linear-gradient(135deg,var(--brand),var(--brand2));color:#fff;border:0;font-size:17px;padding:15px 22px}
+.openbtn b{font-size:20px}
+.gate-card .or{margin:22px 0 10px;font-weight:600;color:#334155;font-size:13px}.gate-card .or small{display:block;font-weight:400;color:var(--muted);margin-top:2px}
+.nameinput{text-align:center;font-size:16px}
+.namechip{border:0;background:rgba(255,255,255,.1);color:#e2e8f0;border-radius:99px;padding:6px 12px;font:600 12.5px Inter,sans-serif;cursor:pointer;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.namechip:hover{background:rgba(255,255,255,.18)}
+@media (max-width:860px){.namechip{padding:6px 9px;max-width:92px}}

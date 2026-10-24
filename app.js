@@ -367,7 +367,7 @@ function tableHTML(T, o = {}) {
   if (!rows.length) return `<div class="empty">${o.q ? 'No matching entries' : 'No entries yet'}</div>`;
   const rt = c => (c.t === 'num' || c.t === 'money') ? ' class="r"' : '';
   const head = T.cols.map(c => `<th${rt(c)}>${esc(c.label)}</th>`).join('') + (o.actions ? '<th></th>' : '');
-  const body = [...rows].reverse().map(r => `<tr>${T.cols.map(c => `<td${rt(c)}>${cellHTML(c, r)}</td>`).join('')}${o.actions ? actionsHTML(T, r) : ''}</tr>`).join('');
+  const body = [...rows].reverse().map(r => `<tr${r._by ? ` title="Entered by ${esc(r._by)}"` : ''}>${T.cols.map(c => `<td${rt(c)}>${cellHTML(c, r)}</td>`).join('')}${o.actions ? actionsHTML(T, r) : ''}</tr>`).join('');
   const foot = footCells(T, rows);
   const hasFoot = T.cols.some(c => c.sum || c.last || (c.t === 'status' && T.bill));
   const tf = hasFoot ? `<tfoot><tr>${foot.map((f, i) => `<td${rt(T.cols[i])}>${f.html}</td>`).join('')}${o.actions ? '<td></td>' : ''}</tr></tfoot>` : '';
@@ -433,8 +433,8 @@ function saveForm(form) {
   if (v.date) lastDate = v.date;
   const arr = db.data[T.key], eid = form.dataset.editing;
   let saved;
-  if (eid) { const i = arr.findIndex(r => r.id === eid); if (i >= 0) { arr[i] = { ...arr[i], ...v }; saved = arr[i]; } toast('Entry updated ✓'); }
-  else { saved = { id: uid(), _t: Date.now(), ...v }; arr.push(saved); toast('Entry added ✓'); }
+  if (eid) { const i = arr.findIndex(r => r.id === eid); if (i >= 0) { arr[i] = stamp({ ...arr[i], ...v }); saved = arr[i]; } toast('Entry updated ✓'); }
+  else { saved = stamp({ id: uid(), _t: Date.now(), ...v }); arr.push(saved); toast('Entry added ✓'); }
   save(); if (saved) syncPut(T.key, saved); resetForm(form, T); afterChange();
 }
 function startEdit(tKey, id, scope) {
@@ -567,7 +567,7 @@ function renderSettings() {
     <h4 style="margin:18px 0 4px;font-size:13px">Steel — pieces in one bundle <small class="muted">(optional; lets loose pieces and bundles be added together)</small></h4>
     <div class="form-grid">${STEEL_SIZES.map(sz => `<label class="fld"><span>${esc(steelName(sz))}</span><input name="ppb_${sz}" type="number" min="0" step="any" value="${esc((m.ppb || {})[sz] || '')}" placeholder="unknown"></label>`).join('')}</div>
     <div class="form-actions"><button class="btn primary" type="submit">Save details</button></div></form></div>`;
-  const team = CLOUD_ON ? `<div class="card" style="margin-top:16px"><h3>Team access</h3>
+  const team = false ? `<div class="card" style="margin-top:16px"><h3>Team access</h3>
     <p class="note" style="margin-top:0">People who can open this ledger by signing in with their Google account. <b>Editor</b> can add and change entries. <b>Viewer</b> can only look and download PDFs. You (${esc(CFG.ownerEmail || '')}) always have full access.</p>
     <div id="teamList" class="list"></div>
     <form id="teamForm" class="form-grid" style="margin-top:12px;align-items:end">
@@ -576,8 +576,8 @@ function renderSettings() {
       <div><button class="btn primary" type="submit">Add person</button></div>
     </form></div>` : '';
   const store = CLOUD_ON
-    ? `<p class="note" style="margin-top:0">☁️ Your data is saved in your Google-secured cloud database and syncs live to every phone and computer you sign in on. It also works offline and syncs when the network returns. Still, download a backup now and then.</p>`
-    : `<p class="note" style="margin-top:0">⚠️ Cloud sync is <b>off</b>: entries are stored in <b>this browser only</b>. Follow <b>SETUP-GOOGLE.md</b> to turn on Google sign-in and sync across devices. Until then, download a backup regularly.</p>`;
+    ? `<p class="note" style="margin-top:0">☁️ Your data is saved in the cloud and syncs live to everyone who opens the site link — on any phone or computer. It also works offline and syncs when the network returns. Anyone with the link can edit, so download a backup now and then.</p>`
+    : `<p class="note" style="margin-top:0">⚠️ Cloud sync is <b>off</b>: entries are stored in <b>this browser only</b>. Follow <b>SETUP-CLOUD.md</b> to turn on cloud sync across devices. Until then, download a backup regularly.</p>`;
   const xlCard = `<div class="card" style="margin-top:16px"><h3>📊 Excel import / export</h3>
     <p class="note" style="margin-top:0">Already keeping records in Excel? Upload the file and we'll move the entries into the website — sheets and columns are matched automatically and you can review everything before it is saved.</p>
     <div class="tools"><button class="btn primary" data-act="xlImport">⬆ Import from Excel</button><button class="btn" data-act="xlTemplate">⬇ Blank Excel template</button><button class="btn" data-act="xlExport">⬇ Export all data to Excel</button>
@@ -591,7 +591,7 @@ function renderSettings() {
         <input type="file" id="restoreFile" accept=".json,application/json" hidden>
       </div>
       <div class="tools" style="margin-top:14px"><button class="btn" data-act="demo">Load demo data</button><button class="btn danger" data-act="reset">Erase everything</button></div>
-      <p class="note">Restore / demo / erase replace <b>all</b> data${CLOUD_ON ? ' for everyone who uses this ledger' : ' in this browser'}.</p>
+      <p class="note">Restore / demo / erase replace <b>all</b> data${CLOUD_ON ? ' for everyone who uses this ledger (the data is shared)' : ' in this browser'}.</p>
     </div></div>`;
   renderTeam();
 }
@@ -781,14 +781,8 @@ document.addEventListener('submit', e => {
     e.preventDefault();
     const amt = num(f.elements.amt.value); if (amt <= 0) return toast('Enter an amount.', 'err');
     const row = db.data[f.dataset.t].find(r => r.id === f.dataset.id); if (!row) return;
-    row.paid = r2(num(row.paid) + amt); (row.log = row.log || []).push({ date: f.elements.date.value || lastDate, amt });
+    stamp(row); row.paid = r2(num(row.paid) + amt); (row.log = row.log || []).push({ date: f.elements.date.value || lastDate, amt });
     lastDate = f.elements.date.value || lastDate; save(); syncPut(f.dataset.t, row); closeModal(); afterChange(); toast('Payment recorded ✓');
-  } else if (f.id === 'teamForm') {
-    e.preventDefault();
-    const em = f.elements.email.value.trim().toLowerCase();
-    if (!/^\S+@\S+\.\S+$/.test(em)) return toast('Enter a valid email.', 'err');
-    fsys().collection('access').doc(em).set({ role: f.elements.role.value, addedBy: cloud.user.email, at: Date.now() }).then(() => toast('Access granted to ' + em + ' ✓')).catch(syncErr);
-    f.reset();
   } else if (f.id === 'metaForm') {
     e.preventDefault(); const fd = new FormData(f);
     Object.keys(DEFAULT_META).forEach(k => { if (k === 'ppb') return; db.meta[k] = k === 'contractValue' ? num(fd.get(k)) : String(fd.get(k) ?? '').trim() || DEFAULT_META[k]; });
@@ -815,9 +809,8 @@ document.addEventListener('click', e => {
   else if (act === 'pdf') pdfSections([b.dataset.sec]);
   else if (act === 'pdfAll') pdfSections(SECTIONS.map(s => s.id));
   else if (act === 'pdfSteel') pdfSteel(b.dataset.size);
-  else if (act === 'signin') signIn();
-  else if (act === 'signout') { if (confirm('Sign out of ' + (cloud.user ? cloud.user.email : 'this account') + '?')) firebase.auth().signOut(); }
-  else if (act === 'rmTeam') { if (confirm('Remove access for ' + b.dataset.email + '?')) fsys().collection('access').doc(b.dataset.email).delete().catch(syncErr); }
+  else if (act === 'openSite') openSite();
+  else if (act === 'rename') renameVisitor();
   else if (act === 'backup') download(`${slug(db.meta.project)}-backup-${todayStr()}.json`, JSON.stringify(db, null, 2));
   else if (act === 'publish') download('data.json', JSON.stringify(db, null, 2));
   else if (act === 'restore') $('#restoreFile').click();
@@ -1050,7 +1043,7 @@ function xlApply() {
   }
   imp.blocks.forEach((b, i) => {
     if (!b.table) return;
-    res[i].ok.forEach(v => { const row = { id: uid(), _t: Date.now() + (c++), ...v }; db.data[b.table].push(row); put.push([b.table, row]); n++; });
+    res[i].ok.forEach(v => { const row = stamp({ id: uid(), _t: Date.now() + (c++), ...v }); db.data[b.table].push(row); put.push([b.table, row]); n++; });
   });
   save(); syncPutMany(put);
   const secs = new Set(put.map(p => p[0])).size;
@@ -1127,41 +1120,22 @@ function syncReplaceAll(old, next) {
   for (let i = 0; i < ops.length; i += 400) { const b = f.batch(); ops.slice(i, i + 400).forEach(op => op(b)); b.commit().catch(syncErr); }
 }
 
-const G_SVG = '<svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.9 2.4 30.4 0 24 0 14.6 0 6.5 5.4 2.6 13.2l7.9 6.1C12.4 13.6 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.5 5.8c4.4-4.1 7.1-10.1 7.1-17.5z"/><path fill="#FBBC05" d="M10.5 28.7a14.5 14.5 0 0 1 0-9.4l-7.9-6.1a24 24 0 0 0 0 21.6l7.9-6.1z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.5-5.8c-2.1 1.4-4.9 2.3-8.4 2.3-6.3 0-11.6-4.1-13.5-9.8l-7.9 6.1C6.5 42.6 14.6 48 24 48z"/></svg>';
 function showGate(html) {
   document.body.classList.add('gate'); closeModal();
   view.innerHTML = `<div class="gate"><div class="gate-card"><div class="logo big">🏗️</div>${html}</div></div>`;
 }
-function gateLogin(msg) {
-  showGate(`<h2>Site Ledger</h2><p class="muted">Sign in with your Google account to open your construction accounts from any phone or computer.</p>
-    <button class="gbtn" data-act="signin">${G_SVG}<span>Sign in with Google</span></button>${msg ? `<p class="gerr">${esc(msg)}</p>` : ''}`);
-}
 function gateFatal(title, msg, withOut) {
-  showGate(`<h2>${esc(title)}</h2><p class="muted">${msg}</p>${withOut ? '<button class="btn" data-act="signout">Sign out / use another account</button>' : ''}`);
-}
-function authMsg(e) {
-  if (e.code === 'auth/unauthorized-domain') return `This website address (${location.hostname}) is not allowed yet. Add it in Firebase → Authentication → Settings → Authorized domains.`;
-  if (e.code === 'auth/network-request-failed') return 'No internet connection. Try again when you are online.';
-  if (e.code === 'auth/operation-not-allowed') return 'Google sign-in is not enabled in Firebase → Authentication → Sign-in method.';
-  return 'Sign-in failed: ' + (e.code || e.message);
-}
-async function signIn() {
-  const p = new firebase.auth.GoogleAuthProvider(); p.setCustomParameters({ prompt: 'select_account' });
-  try { await firebase.auth().signInWithPopup(p); }
-  catch (e) {
-    if (e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') return;
-    if (e.code === 'auth/popup-blocked' || e.code === 'auth/operation-not-supported-in-this-environment') return firebase.auth().signInWithRedirect(p);
-    gateLogin(authMsg(e));
-  }
+  showGate(`<h2>${esc(title)}</h2><p class="muted">${msg}</p>`);
 }
 function applyRole() { document.body.classList.toggle('ro', !canEdit()); document.body.classList.toggle('nosettings', !isOwner()); }
+const NAME_KEY = 'siteLedger.name', SEEN_KEY = 'siteLedger.seen';
+function who() { try { return localStorage.getItem(NAME_KEY) || ''; } catch (e) { return ''; } }
+const stamp = row => { const w = who(); if (w) row._by = w; return row; };
 function renderUserbox() {
   const el = $('#userbox'); if (!el) return;
   if (!CLOUD_ON || !cloud.user) { el.innerHTML = ''; return; }
   const st = ({ saving: ['Saving…', 'warn'], offline: ['Offline', 'off'], synced: ['Synced', 'ok'] })[cloud.status] || ['', ''];
-  const u = cloud.user, ini = esc((u.displayName || u.email || '?').trim()[0].toUpperCase());
-  el.innerHTML = `${st[0] ? `<span class="sync ${st[1]}"><i></i><b>${st[0]}</b></span>` : ''}${cloud.role === 'viewer' ? '<span class="rolebadge">View only</span>' : ''}
-    <button class="avatar" data-act="signout" title="${esc(u.email)} — tap to sign out">${u.photoURL ? `<img src="${esc(u.photoURL)}" alt="" referrerpolicy="no-referrer">` : ini}</button>`;
+  el.innerHTML = `${st[0] ? `<span class="sync ${st[1]}"><i></i><b>${st[0]}</b></span>` : ''}<button class="namechip" data-act="rename" title="Tap to change your name">👤 <span>${esc(who() || 'Guest')}</span></button>`;
 }
 function stopListeners() { cloud.unsubs.forEach(u => { try { u(); } catch (e) { /* ignore */ } }); cloud.unsubs = []; }
 function refreshView() {
@@ -1170,34 +1144,35 @@ function refreshView() {
 }
 function listenErr(e) {
   console.error(e); stopListeners(); cloud.ready = false;
-  if (e.code === 'permission-denied') gateFatal('No access', 'The database refused access. Make sure the security rules from <b>firestore.rules</b> are published and your email has been added by the owner.', true);
-  else gateFatal('Could not load data', esc(e.code || e.message), true);
+  if (e.code === 'permission-denied') gateFatal('Database is locked', 'Open <b>Firebase console → Firestore Database → Rules</b>, paste the contents of <b>firestore.rules</b> from the site folder and press <b>Publish</b>. Then reload this page.', false);
+  else gateFatal('Could not load data', esc(e.code || e.message), false);
 }
-function renderTeam() {
-  const el = $('#teamList'); if (!el) return;
-  el.innerHTML = cloud.team.length ? cloud.team.map(t => `<div class="li"><div class="t"><b>${esc(t.email)}</b><small>${t.role === 'editor' ? 'Editor — can add & change entries' : 'Viewer — view & PDF only'}</small></div><button class="btn sm danger" data-act="rmTeam" data-email="${esc(t.email)}">Remove</button></div>`).join('') : '<div class="empty">Nobody else has access yet.</div>';
+function renderTeam() { /* no accounts in open mode */ }
+function gateName() {
+  showGate(`<h2>Welcome</h2><p class="muted">This is the shared site ledger. Everything you enter is saved to the cloud for everyone.</p>
+    <button class="gbtn openbtn" data-act="openSite"><span>Open ledger</span><b>→</b></button>
+    <p class="or">or add your name first <small>(optional — shows who made each entry)</small></p>
+    <input id="visitorName" class="nameinput" type="text" maxlength="40" placeholder="Your name" autocomplete="name" value="${esc(who())}">`);
+  const i = $('#visitorName'); if (i) i.addEventListener('keydown', e => { if (e.key === 'Enter') openSite(); });
 }
-async function onAuth(user) {
-  stopListeners(); cloud.ready = false; cloud.role = null; cloud.user = user; cloud.team = []; cloud.status = 'idle';
-  if (!user) { db = blankDB(); applyMeta(); document.body.classList.remove('ro', 'nosettings'); renderUserbox(); gateLogin(); return; }
-  showGate('<p class="muted">Signing you in…</p>');
-  const email = (user.email || '').toLowerCase(), cacheKey = 'siteLedger.role.' + email;
-  try {
-    if (!CFG.ownerEmail) throw Object.assign(new Error('ownerEmail missing in config.js'), { code: 'config' });
-    if (email === CFG.ownerEmail.toLowerCase()) cloud.role = 'owner';
-    else { const d = await fsys().collection('access').doc(email).get(); cloud.role = d.exists ? (d.data().role === 'editor' ? 'editor' : 'viewer') : null; }
-    try { localStorage.setItem(cacheKey, cloud.role || ''); } catch (e) { /* ignore */ }
-  } catch (e) {
-    let c = null; try { c = localStorage.getItem(cacheKey); } catch (x) { /* ignore */ }
-    if (e.code === 'unavailable' && c) cloud.role = c;
-    else { gateFatal('Could not check access', esc(e.code === 'config' ? e.message : (e.code || e.message)), true); return; }
-  }
-  if (!cloud.role) { gateFatal('No access yet', `You are signed in as <b>${esc(user.email)}</b>, but this account has not been given access. Ask the owner to add this email under Settings → Team access.`, true); return; }
-  applyRole(); renderUserbox();
+function openSite() {
+  const i = $('#visitorName'), name = i ? i.value.trim().slice(0, 40) : '';
+  try { localStorage.setItem(NAME_KEY, name); localStorage.setItem(SEEN_KEY, '1'); } catch (e) { /* ignore */ }
+  startCloud();
+}
+function renameVisitor() {
+  const n = prompt('Your name (shown against the entries you make):', who());
+  if (n === null) return;
+  try { localStorage.setItem(NAME_KEY, n.trim().slice(0, 40)); } catch (e) { /* ignore */ }
+  renderUserbox(); toast('Name updated ✓');
+}
+function startCloud() {
+  stopListeners(); cloud.ready = false; cloud.role = 'owner'; cloud.user = { displayName: who() || 'Guest' }; cloud.status = 'idle';
+  showGate('<p class="muted">Opening…</p>'); applyRole(); renderUserbox();
   const f = fsys();
   cloud.unsubs.push(f.collection('meta').doc('main').onSnapshot(s => {
     if (s.exists) { db.meta = { ...DEFAULT_META, ...s.data() }; applyMeta(); if (cloud.ready) refreshView(); }
-    else if (cloud.role === 'owner' && !s.metadata.fromCache) syncMeta();
+    else if (!s.metadata.fromCache) syncMeta();
   }, listenErr));
   cloud.unsubs.push(f.collection('rows').onSnapshot({ includeMetadataChanges: true }, snap => {
     cloud.status = snap.metadata.hasPendingWrites ? 'saving' : (snap.metadata.fromCache ? 'offline' : 'synced'); renderUserbox();
@@ -1207,12 +1182,12 @@ async function onAuth(user) {
     db.data = d;
     if (!cloud.ready) { cloud.ready = true; document.body.classList.remove('gate'); route(); } else refreshView();
   }, listenErr));
-  if (cloud.role === 'owner') cloud.unsubs.push(f.collection('access').onSnapshot(s => { cloud.team = s.docs.map(x => ({ email: x.id, role: x.data().role })).sort((a, b) => a.email.localeCompare(b.email)); renderTeam(); }, e => console.warn(e)));
 }
 function cloudInit() {
   firebase.initializeApp(FB);
   try { firebase.firestore().enablePersistence({ synchronizeTabs: true }).catch(() => { /* multiple tabs / unsupported: fine */ }); } catch (e) { /* ignore */ }
-  firebase.auth().onAuthStateChanged(onAuth);
+  let seen = false; try { seen = !!localStorage.getItem(SEEN_KEY); } catch (e) { /* ignore */ }
+  if (seen) startCloud(); else gateName();
 }
 
 /* ---------------- router + init ---------------- */
